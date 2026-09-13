@@ -45,11 +45,16 @@ jobs:
           script: |
             set -e
             fail=0
-            for url in http://127.0.0.1:8030/health; do
-              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$url")
-              echo "HEALTH $url -> $code"
-              case "$code" in 200) ;; *) fail=1 ;; esac
+            # 服务启动要加载 torch + YOLO + hyperlpr（首启还要下载模型，~40-90s），
+            # 固定 sleep 15 会过早误判——这里就绪重试最多 2 分钟
+            code="000"
+            for i in $(seq 1 12); do
+              code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "http://127.0.0.1:8030/health")
+              echo "HEALTH 第 $i 次 -> $code"
+              [ "$code" = "200" ] && break
+              sleep 10
             done
+            case "$code" in 200) ;; *) fail=1 ;; esac
 
             # 功能冒烟：healthz 测不出系统库缺失 / 模型文件缺失，必须在容器内真跑一次核心链路
             # python tools/smoke_test.py 是「完整命令」，自带引号，不要在外面再套一层引号（会引号冲突）
