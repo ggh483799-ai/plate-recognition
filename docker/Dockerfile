@@ -3,7 +3,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# 先装 CPU 版 torch（Linux 上 PyPI 默认 torch 是 CUDA 版，体积大），再装其余依赖
+# 先拷依赖清单再装依赖（利用层缓存：代码改动不重装 torch）
+# 注意顺序：requirements 必须先 COPY 再 install——装依赖时它才在镜像里
+COPY requirements.txt ./
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu \
     && pip install --no-cache-dir -r requirements.txt
 
