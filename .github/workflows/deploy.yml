@@ -31,7 +31,8 @@ jobs:
             done
             if [ "$ok" -ne 1 ]; then echo "[ERROR] git pull 连续 3 次失败"; exit 1; fi
             echo "[INFO] docker compose up -d --build"
-            sudo docker compose up -d --build
+            # compose 文件在仓库 docker/ 子目录（build context 用 .. 指回仓库根）
+            sudo docker compose -f /opt/plate-recognition/docker/docker-compose.yml up -d --build
             echo "[INFO] 等待服务就绪..."
             sleep 15
 
@@ -62,6 +63,6 @@ jobs:
             fi
 
             echo "[INFO] 容器状态："
-            sudo docker compose -f /opt/plate-recognition/docker-compose.yml ps
+            sudo docker compose -f /opt/plate-recognition/docker/docker-compose.yml ps
             if [ "$fail" -ne 0 ]; then echo "[ERROR] 健康检查未全部通过"; exit 1; fi
             echo "[INFO] 全部健康检查通过，部署完成"
