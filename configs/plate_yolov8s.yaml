@@ -1,0 +1,10 @@
+# 车牌检测训练数据配置（Ultralytics 格式）
+# 数据布局：data/raw/plate/{images,labels}/{train,val}
+# 类别：0=plate（单类）
+
+path: ../data/raw/plate
+train: images/train
+val: images/val
+
+names:
+  0: plate

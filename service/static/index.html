@@ -1,0 +1,1055 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>车牌识别 · 图片 / 视频</title>
+<style>
+  :root{
+    --ink:#131A22; --ink-2:#5B6672; --ink-3:#8B95A1;
+    --line:#D5DBE1; --line-2:#E7EBEF;
+    --panel:#F7F9FA; --bg:#FFFFFF;
+    --plate-blue:#1A4B9C; --plate-blue-d:#0F3470;
+    --accent:#E8A400; --ok:#0B7A46; --err:#C0392B;
+    --mono:Consolas,"Cascadia Mono","SFMono-Regular",Menlo,monospace;
+    --sans:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;
+    --r:10px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--bg); color:var(--ink); font-family:var(--sans);
+    font-size:15px; line-height:1.6; -webkit-font-smoothing:antialiased;
+  }
+  .mono{font-family:var(--mono)}
+
+  /* ---------- 顶栏 ---------- */
+  .topbar{
+    display:flex; align-items:center; justify-content:space-between; gap:16px;
+    padding:16px 28px; border-bottom:1px solid var(--line);
+    position:sticky; top:0; background:rgba(255,255,255,.92); backdrop-filter:blur(6px); z-index:10;
+  }
+  .brand{display:flex; align-items:center; gap:12px; min-width:0}
+  .brand__mark{
+    width:24px; height:15px; border-radius:3px; background:var(--plate-blue);
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.4); flex:none;
+  }
+  .brand__name{font-size:16px; font-weight:500; letter-spacing:.01em; margin:0; white-space:nowrap}
+  .brand__sub{
+    font-size:12px; color:var(--ink-3); padding-left:12px;
+    border-left:1px solid var(--line); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .status{
+    display:inline-flex; align-items:center; gap:7px; flex:none;
+    font-size:12px; color:var(--ink-2);
+    border:1px solid var(--line); border-radius:999px; padding:4px 11px;
+  }
+  .status__dot{width:7px; height:7px; border-radius:50%; background:var(--ink-3); flex:none}
+  .status[data-state="ok"] .status__dot{background:var(--ok)}
+  .status[data-state="bad"] .status__dot{background:var(--err)}
+  .status[data-state="checking"] .status__dot{background:var(--accent)}
+
+  /* ---------- 布局 ---------- */
+  .layout{
+    max-width:1180px; margin:0 auto; padding:24px 28px 48px;
+    display:grid; grid-template-columns:1.32fr 1fr; gap:20px; align-items:start;
+  }
+  @media (max-width:900px){ .layout{grid-template-columns:1fr; padding:20px 16px 40px} }
+
+  .panel{border:1px solid var(--line); border-radius:var(--r); background:var(--bg)}
+  .panel__head{
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    padding:12px 16px; border-bottom:1px solid var(--line-2);
+  }
+  .panel__title{
+    margin:0; font-size:12px; font-weight:500; color:var(--ink-2);
+    letter-spacing:.14em; text-transform:none;
+  }
+  .panel__meta{font-family:var(--mono); font-size:12px; color:var(--ink-3); text-align:right}
+
+  /* ---------- 模式切换 ---------- */
+  .tabs{display:inline-flex; gap:2px; padding:2px; border:1px solid var(--line); border-radius:8px; background:var(--panel)}
+  .tab{
+    font:inherit; font-size:13px; padding:4px 14px; border:0; border-radius:6px;
+    background:transparent; color:var(--ink-2); cursor:pointer;
+  }
+  .tab:hover{color:var(--ink)}
+  .tab.is-active{background:#fff; color:var(--ink); box-shadow:0 1px 2px rgba(0,0,0,.08)}
+  .tab:focus-visible{outline:2px solid var(--accent); outline-offset:1px}
+
+  /* ---------- 左侧工作台 ---------- */
+  .stage{padding:16px}
+  .drop{
+    position:relative; display:flex; align-items:center; justify-content:center;
+    aspect-ratio:4/3; width:100%; padding:0; margin:0;
+    background:var(--panel); border:1px dashed var(--line); border-radius:var(--r);
+    color:var(--ink-3); cursor:pointer; font:inherit; text-align:center;
+    transition:border-color .16s ease, background-color .16s ease;
+  }
+  .drop:hover,.drop:focus-visible{border-color:var(--plate-blue); background:#F3F6FB}
+  .drop:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+  .drop--over{border-color:var(--accent); background:#FDF7E8}
+  .drop--filled{border-style:solid; border-color:var(--line); background:#0F1317; cursor:default}
+  .drop--filled:hover{background:#0F1317}
+
+  .drop__hint{display:flex; flex-direction:column; align-items:center; gap:10px; padding:24px}
+  .drop__hint strong{font-size:15px; font-weight:500; color:var(--ink-2)}
+  .drop__hint span{font-size:12px; color:var(--ink-3)}
+
+  .preview{position:absolute; inset:0; overflow:hidden; border-radius:calc(var(--r) - 1px)}
+  .preview img,.preview video{display:block; width:100%; height:100%; object-fit:contain}
+  .preview canvas{position:absolute; inset:0; width:100%; height:100%}
+  .scan{
+    position:absolute; left:0; right:0; height:2px; top:0; opacity:0;
+    background:linear-gradient(90deg,transparent,var(--accent),transparent);
+  }
+  .scan--run{animation:sweep 1.05s cubic-bezier(.4,0,.2,1) 1}
+  @keyframes sweep{
+    0%{opacity:0; transform:translateY(0)}
+    12%{opacity:1}
+    88%{opacity:1}
+    100%{opacity:0; transform:translateY(100%)}
+  }
+
+  .actions{display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; align-items:center}
+  .btn{
+    font:inherit; font-size:14px; padding:8px 15px; border-radius:8px;
+    border:1px solid var(--line); background:#fff; color:var(--ink); cursor:pointer;
+    transition:border-color .16s ease, background-color .16s ease, color .16s ease;
+  }
+  .btn:hover:not(:disabled){border-color:var(--ink-2)}
+  .btn:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+  .btn:disabled{opacity:.45; cursor:not-allowed}
+  .btn--primary{background:var(--plate-blue); border-color:var(--plate-blue); color:#fff}
+  .btn--primary:hover:not(:disabled){background:var(--plate-blue-d); border-color:var(--plate-blue-d)}
+  .btn--ghost{background:transparent; color:var(--ink-2); border-color:transparent}
+  .btn--ghost:hover:not(:disabled){background:var(--panel); border-color:var(--line)}
+  .btn--sm{font-size:13px; padding:5px 11px}
+  .link{
+    font:inherit; font-size:13px; color:var(--plate-blue); background:none; border:0;
+    padding:5px 2px; cursor:pointer; text-decoration:underline; text-underline-offset:3px;
+  }
+
+  .opts{display:flex; flex-wrap:wrap; gap:14px; margin-top:12px; font-size:12px; color:var(--ink-2)}
+  .opts label{display:inline-flex; align-items:center; gap:6px}
+  .opts select{
+    font:inherit; font-size:12px; padding:3px 6px; border:1px solid var(--line);
+    border-radius:6px; background:#fff; color:var(--ink);
+  }
+  .stage__note{margin:12px 0 0; font-size:12px; color:var(--ink-3); min-height:18px}
+
+  /* ---------- 右侧结果 ---------- */
+  .result{display:flex; flex-direction:column; min-height:420px}
+  .result__body{padding:16px; flex:1; display:flex; flex-direction:column; gap:14px}
+  .result__body--wide{padding:16px 16px 20px}
+
+  .state{
+    flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:10px; text-align:center; color:var(--ink-2); padding:28px 12px;
+  }
+  .state h3{margin:0; font-size:15px; font-weight:500}
+  .state p{margin:0; font-size:13px; color:var(--ink-3); max-width:36ch}
+
+  .loader{width:100%; max-width:220px; height:2px; background:var(--line-2); overflow:hidden; border-radius:2px}
+  .loader::after{
+    content:""; display:block; width:38%; height:100%; background:var(--accent);
+    animation:slide 1s ease-in-out infinite;
+  }
+  @keyframes slide{0%{transform:translateX(-100%)}100%{transform:translateX(360%)}}
+
+  /* 确定型进度条（视频任务用真进度，不用无限动画糊弄） */
+  .prog{width:100%; max-width:280px; height:6px; border-radius:3px; background:var(--line-2); overflow:hidden}
+  .prog > i{display:block; height:100%; background:var(--plate-blue); transition:width .25s linear}
+  .prog--indet > i{width:35% !important; animation:slide 1s ease-in-out infinite}
+
+  .error{border-left:3px solid var(--err); padding-left:12px; text-align:left; align-items:flex-start}
+  .warn{
+    border-left:3px solid var(--accent); background:#FDF7E8; padding:8px 12px;
+    border-radius:0 6px 6px 0; font-size:12px; color:#7A5B00;
+  }
+
+  /* 车牌实物：本页的签名元素 —— 结果按 plate_color 渲染成一块真车牌 */
+  .plate{
+    position:relative; display:inline-flex; align-items:center; justify-content:center;
+    min-width:100%; padding:14px 26px; border-radius:7px;
+    border:2px solid var(--line); background:#E4E7EA; color:var(--ink-2);
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.28);
+  }
+  .plate::before,.plate::after{
+    content:""; position:absolute; top:50%; width:5px; height:5px; margin-top:-2.5px;
+    border-radius:50%; background:rgba(255,255,255,.55); box-shadow:0 0 0 1px rgba(0,0,0,.18);
+  }
+  .plate::before{left:9px}
+  .plate::after{right:9px}
+  .plate--blue{background:var(--plate-blue); color:#fff; border-color:var(--plate-blue-d)}
+  .plate--green{background:#3FA648; color:#0A2410; border-color:#2A7A33}
+  .plate--yellow{background:#E8B60F; color:#1A1503; border-color:#B98D06}
+  .plate--white{background:#F5F6F7; color:var(--ink); border-color:#C7CDD4}
+  .plate--black{background:#1D2126; color:#F2F3F5; border-color:#000}
+  .plate__no{
+    font-family:var(--mono); font-weight:700; font-size:clamp(22px,6vw,30px);
+    letter-spacing:.12em; line-height:1.1; white-space:nowrap;
+  }
+  .plate--blank .plate__no{font-weight:400; letter-spacing:.2em; font-size:22px}
+  /* 小号车牌：视频事件列表 / 批量结果里用 */
+  .plate--sm{min-width:0; padding:5px 14px; border-radius:5px; border-width:1px}
+  .plate--sm::before,.plate--sm::after{display:none}
+  .plate--sm .plate__no{font-size:15px; letter-spacing:.08em}
+
+  .hit + .hit{margin-top:14px}
+  .facts{display:grid; grid-template-columns:auto 1fr; gap:6px 14px; margin:14px 0 0; font-size:13px}
+  .facts--tight{margin:8px 0 0; gap:4px 12px; font-size:12px}
+  .facts dt{color:var(--ink-3)}
+  .facts dd{margin:0; display:flex; align-items:center; gap:8px; min-width:0}
+  .facts .val{font-family:var(--mono); font-size:12px}
+  .bar{display:inline-block; width:64px; height:4px; border-radius:2px; background:var(--line-2); overflow:hidden; flex:none}
+  .bar > i{display:block; height:100%; background:var(--plate-blue)}
+  .bar > i.is-low{background:var(--accent)}
+
+  /* ---------- 视频结果 ---------- */
+  .vbox{border:1px solid var(--line); border-radius:8px; overflow:hidden; background:#0F1317}
+  .vbox video{display:block; width:100%; max-height:320px; background:#0F1317}
+  .toolbar{display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:space-between}
+  .toolbar__hint{font-size:12px; color:var(--ink-3)}
+  .stats{display:flex; flex-wrap:wrap; gap:6px 16px; font-size:12px; color:var(--ink-2)}
+  .stats b{font-family:var(--mono); font-weight:600; color:var(--ink)}
+  .sect{margin:2px 0 0; font-size:12px; color:var(--ink-3); letter-spacing:.1em}
+
+  .evlist{display:flex; flex-direction:column; gap:10px}
+  .ev{
+    display:grid; grid-template-columns:88px 1fr; gap:12px; align-items:start;
+    border:1px solid var(--line-2); border-radius:8px; padding:10px;
+  }
+  .ev__shot{
+    width:88px; height:52px; object-fit:cover; border-radius:5px;
+    background:var(--panel); border:1px solid var(--line-2);
+  }
+  .ev__shot--none{
+    display:flex; align-items:center; justify-content:center;
+    font-size:11px; color:var(--ink-3);
+  }
+  .ev__no{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+  .ev__idx{font-family:var(--mono); font-size:11px; color:var(--ink-3)}
+
+  /* 批量图片结果 */
+  .batch{display:flex; flex-direction:column; gap:8px}
+  .bitem{
+    display:grid; grid-template-columns:64px 1fr; gap:10px; align-items:center;
+    border:1px solid var(--line-2); border-radius:8px; padding:8px;
+  }
+  .bitem__thumb{width:64px; height:44px; object-fit:cover; border-radius:4px; background:var(--panel)}
+  .bitem__name{font-size:12px; color:var(--ink-3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .bitem__plates{display:flex; flex-wrap:wrap; gap:6px; margin-top:4px}
+  .bitem--bad{border-color:#F0C9C3; background:#FDF6F5}
+
+  .why{border-top:1px solid var(--line-2); padding:12px 16px; font-size:13px; color:var(--ink-2)}
+  .why summary{cursor:pointer; color:var(--ink-2); font-size:13px; list-style:none; display:flex; align-items:center; gap:8px}
+  .why summary::-webkit-details-marker{display:none}
+  .why summary::before{content:"+"; font-family:var(--mono); color:var(--ink-3); width:12px}
+  .why[open] summary::before{content:"-"}
+  .why summary:focus-visible{outline:2px solid var(--accent); outline-offset:2px; border-radius:4px}
+  .why ol{margin:10px 0 0; padding-left:22px; color:var(--ink-2)}
+  .why li{margin-bottom:4px}
+  .why code{font-family:var(--mono); font-size:12px; background:var(--panel); padding:1px 5px; border-radius:4px}
+
+  .sr-only{position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap}
+
+  @media (prefers-reduced-motion:reduce){
+    .scan--run{animation:none; opacity:0}
+    .loader::after{animation:none; width:100%}
+    .prog--indet > i{animation:none; width:100% !important}
+    *{transition:none !important}
+  }
+</style>
+</head>
+<body>
+
+<h2 class="sr-only">上传车辆图片或视频，自动定位车牌并读取号码</h2>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand__mark" aria-hidden="true"></span>
+    <h1 class="brand__name">车牌识别</h1>
+    <span class="brand__sub" id="brandSub">上传车辆图片，自动定位车牌并读取号码</span>
+    <a class="brand__sub" href="/live" style="color:var(--plate-blue);text-decoration:none">实时流监控 →</a>
+  </div>
+  <div class="status" id="status" data-state="checking">
+    <span class="status__dot" aria-hidden="true"></span>
+    <span id="statusText">连接服务中</span>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="panel">
+    <div class="panel__head">
+      <div class="tabs" role="tablist" aria-label="识别模式">
+        <button class="tab is-active" id="tabImage" role="tab" aria-selected="true">图片</button>
+        <button class="tab" id="tabVideo" role="tab" aria-selected="false">视频</button>
+      </div>
+      <span class="panel__meta" id="fileMeta"></span>
+    </div>
+    <div class="stage">
+      <div class="drop" id="drop" role="button" tabindex="0" aria-label="选择或拖入要识别的文件">
+        <div class="drop__hint" id="dropHint">
+          <svg width="68" height="52" viewBox="0 0 68 52" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+            <rect x="6" y="13" width="56" height="26" rx="4" stroke-dasharray="5 4" />
+            <path d="M34 21v11M29 26l5-5 5 5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          <strong id="hintTitle">拖入图片，或点击选择文件</strong>
+          <span id="hintSub">支持 JPG / PNG / BMP / WebP，也可以直接粘贴截图</span>
+        </div>
+        <div class="preview" id="preview" hidden>
+          <img id="previewImg" alt="待识别的车辆图片" />
+          <video id="previewVideo" playsinline muted loop hidden></video>
+          <canvas id="overlay"></canvas>
+          <div class="scan" id="scan"></div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button class="btn btn--primary" id="pick">选择图片</button>
+        <button class="btn" id="demo">用示例图试试</button>
+        <button class="btn btn--ghost" id="reset" hidden>清除</button>
+      </div>
+      <input type="file" id="file" accept="image/jpeg,image/png,image/bmp,image/webp" multiple hidden />
+      <input type="file" id="vfile" accept="video/mp4,video/quicktime,video/x-msvideo,video/x-matroska,video/webm" hidden />
+
+      <div class="opts" id="videoOpts" hidden>
+        <label>处理范围
+          <select id="range">
+            <option value="600">前 600 帧（约 24 秒）</option>
+            <option value="1200" selected>前 1200 帧（约 48 秒）</option>
+            <option value="3000">前 3000 帧（约 2 分钟）</option>
+            <option value="6000">前 6000 帧（上限）</option>
+          </select>
+        </label>
+        <label>去重窗口
+          <select id="window">
+            <option value="1">1 秒</option>
+            <option value="2">2 秒</option>
+            <option value="3" selected>3 秒</option>
+            <option value="5">5 秒</option>
+          </select>
+        </label>
+      </div>
+
+      <p class="stage__note" id="note"></p>
+    </div>
+  </section>
+
+  <section class="panel result">
+    <div class="panel__head">
+      <h2 class="panel__title">识别结果</h2>
+      <span class="panel__meta" id="elapsed"></span>
+    </div>
+    <div class="result__body" id="results"></div>
+    <details class="why">
+      <summary>为什么有时候读不出车牌？</summary>
+      <ol>
+        <li>车牌很小、角度过斜或严重运动模糊时，会落在检测阈值之下。</li>
+        <li>夜间逆光、强反光会让字符识别置信度掉到上报阈值以下。</li>
+        <li>视频比图片多一道去重：同一车牌在窗口内只报一次，取的是<strong>最清晰那一帧</strong>，不是最后一帧。</li>
+        <li>要用完全自研的模型（而非内置兜底引擎），先跑 <code>tools/train_plate.py</code> 与 <code>tools/train_lprnet.py</code>，把权重放进 <code>weights/</code>，再把 <code>configs/lprnet.yaml</code> 的 <code>engine_mode</code> 改回 <code>cascade</code>。</li>
+      </ol>
+    </details>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  // 服务地址：同源直接相对路径；用 file:// 打开时回落本机 8000；?api= 可覆盖
+  var API = (function () {
+    var q = new URLSearchParams(location.search).get("api");
+    if (q) return q.replace(/\/+$/, "");
+    return location.protocol === "file:" ? "http://127.0.0.1:8000" : "";
+  })();
+
+  var MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+  var MAX_VIDEO_BYTES = 200 * 1024 * 1024;
+  var POLL_MS = 600;
+  var POLL_TIMEOUT_MS = 30 * 60 * 1000;
+
+  var COLOR_LABEL = {
+    blue: "蓝牌", green: "绿牌（新能源）", yellow: "黄牌",
+    white: "白牌", black: "黑牌", unknown: "未能判定"
+  };
+  var PLATE_CLASSES = ["blue", "green", "yellow", "white", "black"];
+  var VEHICLE_LABEL = { car: "小汽车", bus: "客车", truck: "货车", motorcycle: "摩托车" };
+
+  var el = function (id) { return document.getElementById(id); };
+  var drop = el("drop"), preview = el("preview"), previewImg = el("previewImg"),
+      previewVideo = el("previewVideo"), overlay = el("overlay"), scan = el("scan"),
+      fileInput = el("file"), videoInput = el("vfile"),
+      results = el("results"), note = el("note"), fileMeta = el("fileMeta"),
+      elapsed = el("elapsed"), statusEl = el("status"), statusText = el("statusText"),
+      tabImage = el("tabImage"), tabVideo = el("tabVideo"),
+      videoOpts = el("videoOpts"), pick = el("pick"), demoBtn = el("demo");
+
+  var MODE = "image";
+  var busy = false;
+  var objectUrls = [];
+  var pollTimer = null;
+
+  // ---------------- 小工具 ----------------
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function fmtScore(v) { return (typeof v === "number" && v > 0) ? v.toFixed(2) : "—"; }
+  function fmtBytes(n) {
+    if (n < 1024) return n + " B";
+    if (n < 1048576) return (n / 1024).toFixed(0) + " KB";
+    return (n / 1048576).toFixed(1) + " MB";
+  }
+  function fmtSecs(v) {
+    if (typeof v !== "number" || !isFinite(v) || v < 0) return "—";
+    if (v < 60) return v.toFixed(1) + " s";
+    return Math.floor(v / 60) + " 分 " + Math.round(v % 60) + " 秒";
+  }
+  // 产物相对地址 → 可访问 URL（页面用 file:// 打开时要补上 API 前缀）
+  function mediaUrl(u) { return !u ? "" : (/^https?:/.test(u) ? u : API + u); }
+  function isVideo(f) { return !!f && (/^video\//.test(f.type) || /\.(mp4|m4v|mov|avi|mkv|webm|flv|wmv|mpe?g|ts)$/i.test(f.name || "")); }
+  function isImage(f) { return !!f && (/^image\//.test(f.type) || /\.(jpe?g|png|bmp|webp|tiff?)$/i.test(f.name || "")); }
+
+  function setStatus(state, text) {
+    statusEl.dataset.state = state;
+    statusText.textContent = text;
+  }
+  function setBusy(v) {
+    busy = v;
+    pick.disabled = v;
+    demoBtn.disabled = v;
+  }
+  function trackUrl(u) { objectUrls.push(u); return u; }
+  function releaseUrls() {
+    objectUrls.forEach(function (u) { try { URL.revokeObjectURL(u); } catch (e) {} });
+    objectUrls = [];
+  }
+  function downloadText(name, text) {
+    var blob = new Blob(["\ufeff", text], { type: "text/csv;charset=utf-8" });
+    var a = document.createElement("a");
+    a.href = trackUrl(URL.createObjectURL(blob));
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  // ---------------- 模式切换 ----------------
+
+  function setMode(m) {
+    if (MODE === m) return;
+    MODE = m;
+    var img = m === "image";
+    tabImage.classList.toggle("is-active", img);
+    tabVideo.classList.toggle("is-active", !img);
+    tabImage.setAttribute("aria-selected", String(img));
+    tabVideo.setAttribute("aria-selected", String(!img));
+    videoOpts.hidden = img;
+    pick.textContent = img ? "选择图片" : "选择视频";
+    demoBtn.textContent = img ? "用示例图试试" : "用示例视频试试";
+    el("hintTitle").textContent = img ? "拖入图片，或点击选择文件" : "拖入视频，或点击选择文件";
+    el("hintSub").textContent = img
+      ? "支持 JPG / PNG / BMP / WebP，可多选批量识别，也可以直接粘贴截图"
+      : "支持 MP4 / MOV / AVI / MKV / WebM，最长按上方处理范围截取";
+    el("brandSub").textContent = img
+      ? "上传车辆图片，自动定位车牌并读取号码"
+      : "上传行车视频，逐帧识别并按车牌去重，输出事件表与标注视频";
+    fileMeta.textContent = "";
+    clearPreview(true);
+  }
+
+  // ---------------- 结果渲染 ----------------
+
+  function renderIdle() {
+    results.innerHTML = MODE === "video"
+      ? '<div class="state"><h3>还没有视频结果</h3>' +
+        '<p>左侧拖入一段行车视频，这里会显示每个车牌的出现时间、命中帧数与截图。</p></div>'
+      : '<div class="state"><h3>还没有识别结果</h3>' +
+        '<p>左侧拖入车辆图片（可多选批量），这里会显示车牌号码、颜色与车辆类型。</p></div>';
+  }
+  function renderLoading(title, hint, percent) {
+    var bar = (typeof percent === "number")
+      ? '<div class="prog"><i style="width:' + Math.max(0, Math.min(100, percent)).toFixed(1) + '%"></i></div>'
+      : '<div class="loader" aria-hidden="true"></div>';
+    results.innerHTML = '<div class="state">' + bar +
+      '<h3>' + esc(title) + '</h3><p>' + esc(hint) + '</p></div>';
+  }
+  function renderError(title, hint) {
+    results.innerHTML = '<div class="state error"><h3>' + esc(title) + '</h3><p>' + esc(hint) + '</p></div>';
+  }
+  function renderEmpty() {
+    results.innerHTML =
+      '<div class="state" style="flex:0 0 auto; padding-bottom:8px">' +
+        '<h3>没有检出车牌</h3>' +
+        '<p>文件读到了，但这一帧里没有通过校验的车牌。</p>' +
+      '</div>' +
+      '<div class="plate plate--blank"><span class="plate__no">— · — — — — —</span></div>';
+  }
+  function plateClass(c) { return PLATE_CLASSES.indexOf(c) >= 0 ? c : "unknown"; }
+  function plateChip(no, color, small) {
+    return '<span class="plate plate--' + plateClass(color) + (small ? " plate--sm" : "") +
+      '"><span class="plate__no">' + esc(no || "—") + '</span></span>';
+  }
+
+  function factsHTML(p) {
+    var rows = "";
+    rows += '<div><dt>车牌颜色</dt><dd>' + esc(COLOR_LABEL[p.plate_color] || p.plate_color || "—") + "</dd></div>";
+    rows += '<div><dt>车辆类型</dt><dd>' + esc(VEHICLE_LABEL[p.vehicle_type] || p.vehicle_type || "—") + "</dd></div>";
+    var det = (p.det_score || 0) * 100;
+    rows += '<div><dt>检测置信度</dt><dd><span class="bar"><i class="' +
+      (det < 60 ? "is-low" : "") + '" style="width:' + det.toFixed(0) + '%"></i></span>' +
+      '<span class="val">' + fmtScore(p.det_score) + "</span></dd></div>";
+    var rec = p.rec_score || 0;
+    rows += '<div><dt>识别置信度</dt><dd>' + (rec > 0
+      ? '<span class="bar"><i class="' + (rec < 0.6 ? "is-low" : "") + '" style="width:' + (rec * 100).toFixed(0) +
+        '%"></i></span><span class="val">' + fmtScore(rec) + "</span>"
+      : '<span class="val">—</span>') + "</dd></div>";
+    if (typeof p.cost_ms === "number") {
+      rows += '<div><dt>单牌耗时</dt><dd><span class="val">' + p.cost_ms.toFixed(1) + " ms</span></dd></div>";
+    }
+    if (Array.isArray(p.bbox) && p.bbox.length === 4) {
+      rows += '<div><dt>车牌位置</dt><dd><span class="val">' +
+        p.bbox.map(function (v) { return Math.round(v); }).join(", ") + "</span></dd></div>";
+    }
+    return '<dl class="facts">' + rows + "</dl>";
+  }
+  function renderPlates(plates) {
+    results.innerHTML = plates.map(function (p) {
+      return '<div class="hit">' + plateChip(p.plate_no, p.plate_color, false) + factsHTML(p) + "</div>";
+    }).join("");
+  }
+
+  // 图片批量结果：文件名 + 缩略图 + 车牌（或失败原因）
+  function renderBatch(items, files) {
+    var ok = items.filter(function (it) { return !it.error; }).length;
+    var total = items.reduce(function (n, it) { return n + it.plates.length; }, 0);
+    var head = '<div class="toolbar"><span class="stats">共 <b>' + items.length +
+      '</b> 张 · 成功 <b>' + ok + '</b> · 车牌 <b>' + total + '</b> 个</span>' +
+      '<button class="btn btn--sm" id="csvBtn">导出 CSV</button></div>';
+
+    var body = items.map(function (it, i) {
+      var f = files[i];
+      var thumb = f && isImage(f)
+        ? '<img class="bitem__thumb" src="' + trackUrl(URL.createObjectURL(f)) + '" alt="">'
+        : '<div class="bitem__thumb"></div>';
+      var inner;
+      if (it.error) {
+        inner = '<div class="bitem__name">' + esc(it.name) + "</div>" +
+                '<div class="bitem__plates"><span style="font-size:12px;color:var(--err)">' +
+                esc(it.error) + "</span></div>";
+      } else if (!it.plates.length) {
+        inner = '<div class="bitem__name">' + esc(it.name) + "</div>" +
+                '<div class="bitem__plates"><span style="font-size:12px;color:var(--ink-3)">未检出车牌 · ' +
+                (it.cost_ms || 0).toFixed(0) + " ms</span></div>";
+      } else {
+        inner = '<div class="bitem__name">' + esc(it.name) + "</div>" +
+                '<div class="bitem__plates">' + it.plates.map(function (p) {
+                  return plateChip(p.plate_no, p.plate_color, true);
+                }).join("") + "</div>";
+      }
+      return '<div class="bitem' + (it.error ? " bitem--bad" : "") + '">' + thumb +
+             "<div>" + inner + "</div></div>";
+    }).join("");
+
+    results.innerHTML = '<div class="batch">' + head + body + "</div>";
+
+    el("csvBtn").addEventListener("click", function () {
+      var lines = ["file,plate_no,plate_color,vehicle_type,det_score,rec_score,error"];
+      items.forEach(function (it) {
+        if (it.error || !it.plates.length) {
+          lines.push([it.name, "", "", "", "", "", it.error || "未检出"].map(csvCell).join(","));
+          return;
+        }
+        it.plates.forEach(function (p) {
+          lines.push([it.name, p.plate_no, p.plate_color, p.vehicle_type,
+                      p.det_score, p.rec_score, ""].map(csvCell).join(","));
+        });
+      });
+      downloadText("plate_batch.csv", lines.join("\r\n"));
+    });
+  }
+  function csvCell(v) {
+    var s = String(v == null ? "" : v);
+    return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  // 视频进度：上传阶段与处理阶段共用同一个渲染入口
+  function renderVideoProgress(stage, pct, title, detail, extra) {
+    var bar = '<div class="prog' + (typeof pct === "number" ? "" : " prog--indet") + '"><i style="width:' +
+      (typeof pct === "number" ? Math.max(0, Math.min(100, pct)).toFixed(1) : 0) + '%"></i></div>';
+    results.innerHTML = '<div class="state">' + bar + '<h3>' + esc(title) + '</h3>' +
+      '<p>' + esc(detail) + '</p>' + (extra ? '<p>' + esc(extra) + '</p>' : "") + "</div>";
+  }
+
+  function renderVideoResult(data) {
+    var stats = data.stats || {}, events = data.events || [], urls = data.urls || {};
+    var ann = mediaUrl(urls.annotated);
+
+    var summary = '<div class="stats">' +
+      "<span>处理帧数 <b>" + (stats.frames || 0) + "</b></span>" +
+      "<span>含车牌帧 <b>" + (stats.frames_with_plate || 0) + "</b></span>" +
+      "<span>车牌事件 <b>" + (stats.events || 0) + "</b></span>" +
+      "<span>命中合计 <b>" + (stats.total_hits || 0) + "</b></span>" +
+      "<span>处理帧率 <b>" + (stats.process_fps || 0) + " fps</b></span>" +
+      "<span>耗时 <b>" + fmtSecs(stats.elapsed_s) + "</b></span>" +
+      "<span>去重窗口 <b>" + (stats.window_s || 0) + " s</b></span>" +
+      "</div>";
+
+    var warn = "";
+    if (stats.truncated) {
+      warn = '<div class="warn">只处理了前 ' + (stats.frames || 0) + ' 帧（源视频共 ' +
+        (stats.total_frames || "?") + ' 帧），后面的内容未参与识别。需要看全片请调大处理范围。</div>';
+    }
+
+    var head = '<div class="toolbar">' + summary +
+      '<span>' + (urls.csv ? '<button class="btn btn--sm" id="csvBtn">导出事件 CSV</button>' : "") +
+      ' <button class="link" id="againBtn">重新识别</button></span></div>';
+
+    var player = ann
+      ? '<div class="vbox"><video id="annVideo" src="' + esc(ann) + '" controls autoplay muted loop playsinline></video></div>'
+      : '<div class="warn">标注视频未生成，只能看事件表。</div>';
+
+    var list;
+    if (!events.length) {
+      list = '<div class="state" style="flex:0 0 auto; padding:16px 12px"><h3>没有检出车牌</h3>' +
+             '<p>整段视频没有通过校验的车牌，可换一段更清晰的视频或调大处理范围。</p></div>';
+    } else {
+      list = '<p class="sect">车牌事件（' + events.length + '）</p><div class="evlist">' +
+        events.map(function (ev, i) {
+          var shot = ev.shot && urls.shots
+            ? '<img class="ev__shot" src="' + esc(mediaUrl(urls.shots) + "/" + ev.shot) +
+              '" alt="' + esc(ev.plate_no) + ' 截图">'
+            : '<div class="ev__shot ev__shot--none">无截图</div>';
+          return '<div class="ev">' + shot + "<div>" +
+            '<div class="ev__no">' + plateChip(ev.plate_no, ev.plate_color, true) +
+              '<span class="ev__idx">#' + (i + 1) + " · " + fmtSecs(ev.t_sec) + " · 命中 " + ev.hits + " 帧</span></div>" +
+            '<dl class="facts facts--tight">' +
+              "<div><dt>车牌颜色</dt><dd>" + esc(COLOR_LABEL[ev.plate_color] || ev.plate_color || "—") + "</dd></div>" +
+              "<div><dt>车辆类型</dt><dd>" + esc(VEHICLE_LABEL[ev.vehicle_type] || ev.vehicle_type || "—") + "</dd></div>" +
+              "<div><dt>检测 / 识别置信度</dt><dd><span class=\"val\">" +
+                fmtScore(ev.det_score) + " / " + fmtScore(ev.rec_score) + "</span></dd></div>" +
+              "<div><dt>首现</dt><dd><span class=\"val\">第 " + ev.frame_idx + " 帧 · " + fmtSecs(ev.t_sec) + "</span></dd></div>" +
+            "</dl>" +
+          "</div></div>";
+        }).join("") + "</div>";
+    }
+
+    results.innerHTML = head + warn + player + list;
+    results.classList.add("result__body--wide");
+
+    if (el("csvBtn")) {
+      el("csvBtn").addEventListener("click", function () {
+        window.open(mediaUrl(urls.csv), "_blank");
+      });
+    }
+    el("againBtn").addEventListener("click", function () { clearPreview(); });
+  }
+
+  // ---------------- 图片流程 ----------------
+
+  function drawBoxes(plates) {
+    var ctx = overlay.getContext("2d");
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+    var list = (plates || []).filter(function (p) {
+      return Array.isArray(p.bbox) && p.bbox.length === 4;
+    });
+    if (!list.length) return;
+    var lw = Math.max(2, Math.round(overlay.width / 320));
+    ctx.lineWidth = lw;
+    ctx.strokeStyle = "#E8A400";
+    ctx.font = Math.round(overlay.width / 34) + "px Consolas, monospace";
+    ctx.textBaseline = "bottom";
+    list.forEach(function (p) {
+      var b = p.bbox;
+      ctx.strokeRect(b[0], b[1], b[2] - b[0], b[3] - b[1]);
+      var label = p.plate_no || "";
+      if (!label) return;
+      var tw = ctx.measureText(label).width;
+      var ty = Math.max(0, b[1] - lw - 2);
+      ctx.fillStyle = "rgba(232,164,0,.92)";
+      ctx.fillRect(b[0], Math.max(0, ty - ctx.lineWidth * 8), tw + lw * 6, ctx.lineWidth * 8);
+      ctx.fillStyle = "#1A1503";
+      ctx.fillText(label, b[0] + lw * 3, ty);
+    });
+  }
+
+  function showImagePreview(file) {
+    previewVideo.hidden = true;
+    previewVideo.removeAttribute("src");
+    previewImg.hidden = false;
+    var url = trackUrl(URL.createObjectURL(file));
+    previewImg.onload = function () {
+      overlay.width = previewImg.naturalWidth || 1;
+      overlay.height = previewImg.naturalHeight || 1;
+      drawBoxes([]);
+    };
+    previewImg.src = url;
+    preview.hidden = false;
+    el("dropHint").hidden = true;
+    drop.classList.add("drop--filled");
+    el("reset").hidden = false;
+  }
+
+  function showVideoPreview(file) {
+    previewImg.hidden = true;
+    previewImg.removeAttribute("src");
+    previewVideo.hidden = false;
+    previewVideo.src = trackUrl(URL.createObjectURL(file));
+    preview.hidden = false;
+    el("dropHint").hidden = true;
+    drop.classList.add("drop--filled");
+    el("reset").hidden = false;
+    overlay.width = 0;
+    overlay.height = 0;
+  }
+
+  function clearPreview(silent) {
+    stopPolling();
+    preview.hidden = true;
+    previewImg.removeAttribute("src");
+    previewVideo.removeAttribute("src");
+    previewVideo.load();
+    el("dropHint").hidden = false;
+    fileInput.value = "";
+    videoInput.value = "";
+    drop.classList.remove("drop--filled");
+    el("reset").hidden = true;
+    fileMeta.textContent = "";
+    note.textContent = "";
+    elapsed.textContent = "";
+    results.classList.remove("result__body--wide");
+    releaseUrls();
+    if (!silent) renderIdle();
+  }
+
+  function runScan() {
+    if (MODE !== "image") return;
+    scan.classList.remove("scan--run");
+    void scan.offsetWidth;
+    scan.classList.add("scan--run");
+  }
+
+  function classifyHttp(status, detail) {
+    if (status === 503) return ["模型还没准备好", detail || "服务正在加载权重，稍等片刻再试一次。"];
+    if (status === 400) return ["这个文件用不了", detail || "文件可能已损坏，或格式不受支持。"];
+    if (status === 413) return ["文件太大了", detail || "请压缩或截短后再上传。"];
+    if (status === 404) return ["文件已经不在服务端了", "任务产物可能已被过期清理，请重新上传。"];
+    return ["识别失败", detail || ("服务返回了状态码 " + status + "。")];
+  }
+
+  async function readBody(res) {
+    try { return await res.json(); } catch (e) { return null; }
+  }
+
+  async function sendSingle(file) {
+    var form = new FormData();
+    form.append("file", file, file.name || "upload.jpg");
+    var t0 = performance.now();
+    var res = await fetch(API + "/predict", { method: "POST", body: form });
+    var cost = performance.now() - t0;
+    var body = await readBody(res);
+    if (!res.ok) {
+      var pair = classifyHttp(res.status, body && (body.detail || body.msg));
+      renderError(pair[0], pair[1]);
+      elapsed.textContent = "HTTP " + res.status;
+      return;
+    }
+    var plates = (body && body.data && body.data.plates) || [];
+    elapsed.textContent = cost.toFixed(0) + " ms";
+    if (!plates.length) { renderEmpty(); return; }
+    renderPlates(plates);
+    drawBoxes(plates);
+  }
+
+  async function sendBatch(files) {
+    var form = new FormData();
+    files.forEach(function (f) { form.append("files", f, f.name || "image.jpg"); });
+    var t0 = performance.now();
+    var res = await fetch(API + "/predict_batch", { method: "POST", body: form });
+    var cost = performance.now() - t0;
+    var body = await readBody(res);
+    if (!res.ok) {
+      var pair = classifyHttp(res.status, body && (body.detail || body.msg));
+      renderError(pair[0], pair[1]);
+      return;
+    }
+    var data = (body && body.data) || {};
+    elapsed.textContent = cost.toFixed(0) + " ms";
+    renderBatch(data.items || [], files);
+  }
+
+  async function acceptImages(files) {
+    if (busy) return;
+    var list = Array.prototype.slice.call(files).filter(function (f) { return !!f; });
+    if (!list.length) return;
+    var bad = list.filter(function (f) { return !isImage(f); });
+    if (bad.length) {
+      note.textContent = "只支持图片文件：" + bad.map(function (f) { return f.name; }).join("、");
+      return;
+    }
+    var big = list.filter(function (f) { return f.size > MAX_IMAGE_BYTES; });
+    if (big.length) {
+      note.textContent = "单张图片不能超过 12 MB：" + big.map(function (f) { return f.name; }).join("、");
+      return;
+    }
+    setBusy(true);
+    note.textContent = "";
+    elapsed.textContent = "";
+    fileMeta.textContent = list.length === 1 ? fmtBytes(list[0].size) : list.length + " 张";
+    if (list.length === 1) {
+      showImagePreview(list[0]);
+      renderLoading("正在识别", "检测车辆与车牌位置，再读取号牌字符。");
+    } else {
+      showImagePreview(list[0]);          // 多图时只预览第一张
+      renderLoading("正在批量识别", "共 " + list.length + " 张，逐张推理。");
+    }
+    runScan();
+    try {
+      if (list.length === 1) await sendSingle(list[0]);
+      else await sendBatch(list);
+    } catch (err) {
+      renderError("连不上识别服务", "确认服务已启动，然后重试。");
+      note.textContent = API || location.origin;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ---------------- 视频流程 ----------------
+
+  function uploadVideo(file, onProgress) {
+    return new Promise(function (resolve, reject) {
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", API + "/predict_video");
+      xhr.upload.onprogress = function (e) {
+        if (e.lengthComputable) onProgress(e.loaded / e.total);
+      };
+      xhr.onload = function () {
+        var body = null;
+        try { body = JSON.parse(xhr.responseText); } catch (e) { body = null; }
+        if (xhr.status >= 200 && xhr.status < 300 && body && body.data) resolve(body.data);
+        else reject({ status: xhr.status, detail: (body && (body.detail || body.msg)) || "" });
+      };
+      xhr.onerror = function () { reject({ status: 0, detail: "" }); };
+      xhr.onabort = function () { reject({ status: -1, detail: "上传已取消" }); };
+
+      var form = new FormData();
+      form.append("file", file, file.name || "upload.mp4");
+      form.append("window_s", el("window").value);
+      form.append("max_frames", el("range").value);
+      xhr.send(form);
+    });
+  }
+
+  function stopPolling() {
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+  }
+
+  function showJobProgress(d) {
+    var p = d.progress || {};
+    var pct = p.total_frames > 0 ? p.percent : null;   // 未知总长时用不确定进度条
+    var detail = p.total_frames > 0
+      ? "已处理 " + p.frames + " / " + p.total_frames + " 帧 · 已用 " + p.elapsed_s + " s" +
+        (p.eta_s != null ? " · 预计还需 " + Math.round(p.eta_s) + " s" : "")
+      : "已处理 " + p.frames + " 帧 · 已用 " + p.elapsed_s + " s";
+    renderVideoProgress("job", pct, "正在识别视频", detail,
+      "含车牌 " + (p.det_frames || 0) + " 帧；同一车牌在去重窗口内只上报一次，请耐心等待。");
+  }
+
+  function pollJob(jobId, startedAt) {
+    var tick = async function () {
+      if (performance.now() - startedAt > POLL_TIMEOUT_MS) {
+        renderError("任务等待超时", "服务端仍在处理或任务已被清理，请重新上传。");
+        setBusy(false);
+        return;
+      }
+      var res;
+      try {
+        res = await fetch(API + "/predict_video/" + encodeURIComponent(jobId));
+      } catch (err) {
+        renderError("连不上识别服务", "轮询中断，确认服务还在运行后重新上传。");
+        setBusy(false);
+        return;
+      }
+      var body = await readBody(res);
+      if (!res.ok) {
+        var pair = classifyHttp(res.status, body && (body.detail || body.msg));
+        renderError(pair[0], pair[1]);
+        setBusy(false);
+        return;
+      }
+      var d = body.data;
+      if (d.status === "done") {
+        elapsed.textContent = fmtSecs((d.stats || {}).elapsed_s);
+        renderVideoResult(d);
+        setBusy(false);
+        return;
+      }
+      if (d.status === "failed") {
+        renderError("视频识别失败", d.error || "服务端处理出错，请换一段视频再试。");
+        elapsed.textContent = "失败";
+        setBusy(false);
+        return;
+      }
+      showJobProgress(d);
+      pollTimer = setTimeout(tick, POLL_MS);
+    };
+    tick();
+  }
+
+  async function acceptVideo(file) {
+    if (busy) return;
+    if (!file) return;
+    if (!isVideo(file)) {
+      note.textContent = "这不是视频文件：" + (file.name || "");
+      return;
+    }
+    if (file.size > MAX_VIDEO_BYTES) {
+      note.textContent = "视频不能超过 200 MB，请先压缩或截短。";
+      return;
+    }
+    setBusy(true);
+    note.textContent = "";
+    elapsed.textContent = "";
+    fileMeta.textContent = fmtBytes(file.size);
+    showVideoPreview(file);
+    renderVideoProgress("upload", 0, "正在上传视频", "0%");
+    try {
+      var started = performance.now();
+      var job = await uploadVideo(file, function (r) {
+        renderVideoProgress("upload", r * 100, "正在上传视频",
+          Math.round(r * 100) + "% · " + fmtBytes(file.size));
+      });
+      renderVideoProgress("job", null, "正在识别视频", "服务端已开始处理，正在排队/推理…");
+      elapsed.textContent = "处理中";
+      pollJob(job.job_id, started);
+    } catch (err) {
+      var pair = classifyHttp(err.status, err.detail);
+      if (err.status === -1) pair = ["上传已中断", err.detail || ""];
+      renderError(pair[0], pair[1]);
+      setBusy(false);
+    }
+  }
+
+  // ---------------- 统一入口 ----------------
+
+  function accept(files) {
+    var list = Array.prototype.slice.call(files || []).filter(function (f) { return !!f; });
+    if (!list.length) return;
+    // 按文件类型自动切换模式：拖进视频就切到视频，拖进图片就切回图片
+    if (list.length === 1 && isVideo(list[0])) {
+      setMode("video");
+      acceptVideo(list[0]);
+      return;
+    }
+    if (list.some(isImage)) {
+      setMode("image");
+      acceptImages(list);
+      return;
+    }
+    note.textContent = "只支持图片或视频文件。";
+  }
+
+  // ---------------- 事件绑定 ----------------
+
+  tabImage.addEventListener("click", function () { setMode("image"); });
+  tabVideo.addEventListener("click", function () { setMode("video"); });
+
+  pick.addEventListener("click", function () {
+    if (MODE === "video") videoInput.click(); else fileInput.click();
+  });
+  drop.addEventListener("click", function () {
+    if (!drop.classList.contains("drop--filled")) pick.click();
+  });
+  drop.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      if (!drop.classList.contains("drop--filled")) pick.click();
+    }
+  });
+  fileInput.addEventListener("change", function () {
+    accept(fileInput.files);
+    fileInput.value = "";
+  });
+  videoInput.addEventListener("change", function () {
+    accept(videoInput.files);
+    videoInput.value = "";
+  });
+  el("reset").addEventListener("click", function () { clearPreview(); });
+
+  ["dragenter", "dragover"].forEach(function (t) {
+    drop.addEventListener(t, function (e) {
+      e.preventDefault();
+      drop.classList.add("drop--over");
+    });
+  });
+  ["dragleave", "drop"].forEach(function (t) {
+    drop.addEventListener(t, function (e) {
+      e.preventDefault();
+      drop.classList.remove("drop--over");
+    });
+  });
+  drop.addEventListener("drop", function (e) {
+    var f = e.dataTransfer && e.dataTransfer.files;
+    accept(f);
+  });
+  document.addEventListener("paste", function (e) {
+    var items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].type && items[i].type.indexOf("image/") === 0) {
+        accept([items[i].getAsFile()]);
+        break;
+      }
+    }
+  });
+
+  // 示例：走与手动上传完全相同的链路（同源取文件 → 上传 → 识别）
+  demoBtn.addEventListener("click", function () {
+    if (busy) return;
+    var isVid = MODE === "video";
+    var asset = isVid ? "/static/demo.mp4" : "/static/demo.jpg";
+    demoBtn.disabled = true;
+    note.textContent = isVid ? "正在取示例视频…" : "正在取示例图…";
+    fetch(API + asset)
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.blob();
+      })
+      .then(function (blob) {
+        note.textContent = "";
+        var name = isVid ? "demo.mp4" : "demo.jpg";
+        var payload = blob;
+        try { payload = new File([blob], name, { type: blob.type || (isVid ? "video/mp4" : "image/jpeg") }); }
+        catch (e) { /* 少数环境无 File 构造器：直接传 Blob，FormData 仍可用 */ }
+        accept([payload]);
+      })
+      .catch(function () {
+        note.textContent = "示例文件不可用，请手动选择。";
+      })
+      .then(function () { demoBtn.disabled = false; });
+  });
+
+  // 探活
+  (async function health() {
+    try {
+      var r = await fetch(API + "/health");
+      if (!r.ok) throw new Error("bad");
+      var b = await r.json();
+      setStatus("ok", "服务在线 · " + (b.model_ver || "v1.0") + (b.gpu ? " · GPU" : " · CPU") +
+        (b.engine === "on" ? " · 引擎开" : ""));
+    } catch (e) {
+      setStatus("bad", "服务未连接");
+    }
+  })();
+
+  renderIdle();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+# 车牌识别（LPRNet）与流水线运行配置
+# 计划书 §6 M3/M4；服务与推理脚本共用。
+
+# 模型权重（weights/ 目录下，缺失时自动降级）
+vehicle_weights: yolov8n.pt      # 车辆检测（预训练）
+plate_weights: yolov8n.pt        # 车牌检测（训练后替换为 plate_best.pt）
+lprnet_weights: lprnet_best.pt   # 字符识别（训练后权重）
+
+# 推理参数
+device: cpu                      # cpu / 0（GPU），仅影响自研级联
+min_det_score: 0.5               # 检测置信度阈值
+min_rec_score: 0.6               # 识别置信度阈值
+
+# 兜底引擎（hyperlpr3 ONNX：检测+识别+分类三合一）
+# 作用：训练权重（plate_best.pt / lprnet_best.pt）就绪前，保证端到端能出真实车牌号。
+#   cascade → 只用自研三级级联（不加载引擎）
+#   auto    → 先跑级联，级联无结果时用引擎兜底（当前默认，训练权重就绪后可改回 cascade）
+#   engine  → 只用兜底引擎
+engine_mode: auto
+engine_detect_level: high        # high=640px 更准 / low=320px 更快
+engine_logger_level: 3           # onnxruntime 日志级别（3=仅错误）
+
+# LPRNet 输入与序列（与 src/models/lprnet.py 常量一致）
+input_w: 94
+input_h: 24
+seq_len: 23

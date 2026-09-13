@@ -1,0 +1,9 @@
+# 减小 build context，且不把本地运行数据打进镜像
+.git/
+.workbuddy/
+runs/
+logs/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env

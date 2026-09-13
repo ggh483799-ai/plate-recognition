@@ -1,0 +1,22 @@
+# MV-01 车牌识别服务编排
+# 启动：docker compose up -d --build
+# 探活：curl localhost:8000/health
+services:
+  lpr:
+    container_name: plate-recognition   # 冒烟/运维按名字 exec，固定容器名
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8030:8000"               # 宿主机 8030（服务器上 8000/8010/8020 已被占用）
+    volumes:
+      - ../weights:/app/weights   # 权重持久化
+      - ../logs:/app/logs         # 日志挂载宿主机，容器重启不丢（计划书 §10.3）
+      - ../runs:/app/runs         # 识别产物（截图/CSV）挂载，容器重建不丢
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped

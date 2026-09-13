@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# 运行产物与日志（服务器上由 volume 承载，不进 git）
+runs/
+logs/
+
+# 密钥与本地配置
+.env
+.workbuddy/

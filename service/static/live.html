@@ -1,0 +1,683 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>车牌识别 · 实时流</title>
+<style>
+  :root{
+    --ink:#131A22; --ink-2:#5B6672; --ink-3:#8B95A1;
+    --line:#D5DBE1; --line-2:#E7EBEF;
+    --panel:#F7F9FA; --bg:#FFFFFF;
+    --plate-blue:#1A4B9C; --plate-blue-d:#0F3470;
+    --accent:#E8A400; --ok:#0B7A46; --err:#C0392B;
+    --mono:Consolas,"Cascadia Mono","SFMono-Regular",Menlo,monospace;
+    --sans:"Segoe UI","PingFang SC","Microsoft YaHei",system-ui,-apple-system,sans-serif;
+    --r:10px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg); color:var(--ink); font-family:var(--sans); font-size:15px; line-height:1.6;
+       -webkit-font-smoothing:antialiased}
+  .mono{font-family:var(--mono)}
+
+  .topbar{
+    display:flex; align-items:center; justify-content:space-between; gap:16px;
+    padding:16px 28px; border-bottom:1px solid var(--line);
+    position:sticky; top:0; background:rgba(255,255,255,.92); backdrop-filter:blur(6px); z-index:10;
+  }
+  .brand{display:flex; align-items:center; gap:12px; min-width:0}
+  .brand__mark{
+    width:24px; height:15px; border-radius:3px; background:var(--plate-blue);
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.4); flex:none;
+  }
+  .brand__name{font-size:16px; font-weight:500; margin:0; white-space:nowrap}
+  .brand__sub{font-size:12px; color:var(--ink-3); padding-left:12px; border-left:1px solid var(--line)}
+  .nav{display:flex; align-items:center; gap:14px; flex:none}
+  .nav a{font-size:13px; color:var(--plate-blue); text-decoration:none; border-bottom:1px solid transparent}
+  .nav a:hover{border-bottom-color:var(--plate-blue)}
+  .status{
+    display:inline-flex; align-items:center; gap:7px; font-size:12px; color:var(--ink-2);
+    border:1px solid var(--line); border-radius:999px; padding:4px 11px;
+  }
+  .status__dot{width:7px; height:7px; border-radius:50%; background:var(--ink-3); flex:none}
+  .status[data-state="ok"] .status__dot{background:var(--ok)}
+  .status[data-state="bad"] .status__dot{background:var(--err)}
+  .status[data-state="checking"] .status__dot{background:var(--accent)}
+
+  .wrap{max-width:1240px; margin:0 auto; padding:22px 28px 48px; display:flex; flex-direction:column; gap:18px}
+  @media (max-width:900px){ .wrap{padding:18px 14px 40px} }
+
+  .panel{border:1px solid var(--line); border-radius:var(--r); background:var(--bg)}
+  .panel__head{
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    padding:12px 16px; border-bottom:1px solid var(--line-2);
+  }
+  .panel__title{margin:0; font-size:12px; font-weight:500; color:var(--ink-2); letter-spacing:.12em}
+  .panel__meta{font-family:var(--mono); font-size:12px; color:var(--ink-3); text-align:right}
+  .panel__body{padding:16px}
+
+  .ctl{display:flex; flex-wrap:wrap; gap:18px; align-items:flex-end}
+  .field{display:flex; flex-direction:column; gap:6px; min-width:0}
+  .field > span{font-size:12px; color:var(--ink-3)}
+  .seg{display:inline-flex; gap:2px; padding:2px; border:1px solid var(--line); border-radius:8px; background:var(--panel)}
+  .seg button{
+    font:inherit; font-size:13px; padding:5px 13px; border:0; border-radius:6px;
+    background:transparent; color:var(--ink-2); cursor:pointer;
+  }
+  .seg button:hover:not(:disabled){color:var(--ink)}
+  .seg button.is-active{background:#fff; color:var(--ink); box-shadow:0 1px 2px rgba(0,0,0,.08)}
+  .seg button:disabled{opacity:.5; cursor:not-allowed}
+  input[type=text],select,input[type=file]{
+    font:inherit; font-size:13px; padding:6px 9px; border:1px solid var(--line);
+    border-radius:7px; background:#fff; color:var(--ink); min-width:190px;
+  }
+  input[type=text]:focus,select:focus{outline:2px solid var(--accent); outline-offset:1px}
+  .btn{
+    font:inherit; font-size:14px; padding:8px 16px; border-radius:8px; border:1px solid var(--line);
+    background:#fff; color:var(--ink); cursor:pointer; white-space:nowrap;
+  }
+  .btn:hover:not(:disabled){border-color:var(--ink-2)}
+  .btn:disabled{opacity:.45; cursor:not-allowed}
+  .btn--primary{background:var(--plate-blue); border-color:var(--plate-blue); color:#fff}
+  .btn--primary:hover:not(:disabled){background:var(--plate-blue-d); border-color:var(--plate-blue-d)}
+  .btn--danger{background:#fff; border-color:#E6B8B1; color:var(--err)}
+  .btn--danger:hover:not(:disabled){background:#FDF6F5; border-color:var(--err)}
+  .note{margin:12px 0 0; font-size:12px; color:var(--ink-3); min-height:18px}
+  .note--err{color:var(--err)}
+  .note--ok{color:var(--ok)}
+
+  .grid{display:grid; grid-template-columns:1.5fr 1fr; gap:18px; align-items:start}
+  @media (max-width:960px){ .grid{grid-template-columns:1fr} }
+  .view{position:relative; background:#0F1317; border-radius:calc(var(--r) - 1px); overflow:hidden; min-height:300px;
+        display:flex; align-items:center; justify-content:center}
+  .view img{display:block; width:100%; height:auto; max-height:64vh; object-fit:contain; background:#0F1317}
+  .view__ph{padding:56px 20px; text-align:center; color:#8B95A1; font-size:13px; max-width:42ch}
+  .badge{
+    position:absolute; left:12px; top:12px; display:none; align-items:center; gap:7px;
+    font-size:11px; letter-spacing:.14em; color:#fff; background:rgba(0,0,0,.55);
+    border-radius:999px; padding:4px 11px; backdrop-filter:blur(3px);
+  }
+  .badge--on{display:inline-flex}
+  .badge__dot{width:7px; height:7px; border-radius:50%; background:#ff4d4f; animation:pulse 1.4s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+
+  .kpis{display:grid; grid-template-columns:1fr 1fr; gap:10px 14px; padding:14px 16px}
+  .kpi{display:flex; flex-direction:column; gap:2px; min-width:0}
+  .kpi > span{font-size:11px; color:var(--ink-3)}
+  .kpi > b{font-family:var(--mono); font-size:17px; font-weight:600}
+  .kpi > b.is-dim{color:var(--ink-3); font-weight:400}
+
+  .evlist{padding:8px 12px 14px; display:flex; flex-direction:column; gap:8px; max-height:52vh; overflow:auto}
+  .ev{display:grid; grid-template-columns:78px 1fr; gap:10px; align-items:center;
+      border:1px solid var(--line-2); border-radius:8px; padding:8px}
+  .ev--new{border-color:var(--accent); background:#FDF7E8}
+  .ev__shot{width:78px; height:46px; object-fit:cover; border-radius:5px; background:var(--panel);
+            border:1px solid var(--line-2)}
+  .ev__no{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+  .ev__meta{font-family:var(--mono); font-size:11px; color:var(--ink-3); margin-top:3px}
+  .empty{padding:26px 14px; text-align:center; font-size:13px; color:var(--ink-3)}
+
+  .plate{
+    position:relative; display:inline-flex; align-items:center; justify-content:center;
+    padding:5px 14px; border-radius:5px; border:1px solid var(--line);
+    background:#E4E7EA; color:var(--ink-2);
+  }
+  .plate--blue{background:var(--plate-blue); color:#fff; border-color:var(--plate-blue-d)}
+  .plate--green{background:#3FA648; color:#0A2410; border-color:#2A7A33}
+  .plate--yellow{background:#E8B60F; color:#1A1503; border-color:#B98D06}
+  .plate--white{background:#F5F6F7; color:var(--ink); border-color:#C7CDD4}
+  .plate--black{background:#1D2126; color:#F2F3F5; border-color:#000}
+  .plate__no{font-family:var(--mono); font-weight:700; font-size:15px; letter-spacing:.08em}
+
+  .tips{border-top:1px solid var(--line-2); padding:12px 16px; font-size:12.5px; color:var(--ink-2)}
+  .tips summary{cursor:pointer; list-style:none; display:flex; align-items:center; gap:8px}
+  .tips summary::-webkit-details-marker{display:none}
+  .tips summary::before{content:"+"; font-family:var(--mono); color:var(--ink-3); width:12px}
+  .tips[open] summary::before{content:"-"}
+  .tips ol{margin:10px 0 0; padding-left:22px}
+  .tips li{margin-bottom:5px}
+  .tips code{font-family:var(--mono); font-size:12px; background:var(--panel); padding:1px 5px; border-radius:4px}
+  @media (prefers-reduced-motion:reduce){ .badge__dot{animation:none} *{transition:none !important} }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand__mark" aria-hidden="true"></span>
+    <h1 class="brand__name">车牌识别 · 实时流</h1>
+    <span class="brand__sub">摄像头 / RTSP / 本地视频：边播边识别</span>
+  </div>
+  <div class="nav">
+    <a href="/">上传识别（图片 / 视频）</a>
+    <div class="status" id="status" data-state="checking">
+      <span class="status__dot" aria-hidden="true"></span>
+      <span id="statusText">连接服务中</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <section class="panel">
+    <div class="panel__head">
+      <h2 class="panel__title">来源与参数</h2>
+      <span class="panel__meta" id="srcMeta"></span>
+    </div>
+    <div class="panel__body">
+      <div class="ctl">
+        <div class="field">
+          <span>视频来源</span>
+          <div class="seg" id="srcSeg">
+            <button data-src="camera" class="is-active">本机摄像头</button>
+            <button data-src="rtsp">流地址 / 网页链接</button>
+            <button data-src="file">本地视频</button>
+          </div>
+        </div>
+
+        <div class="field" id="fCamera">
+          <span>可用设备</span>
+          <select id="cameraIdx" style="min-width:230px">
+            <option value="">探测中…</option>
+          </select>
+        </div>
+
+        <div class="field" id="fRtsp" hidden>
+          <span>流地址 / 视频网页链接</span>
+          <input type="text" id="rtspUrl" placeholder="rtsp://… 或 https://weibo.com/tv/show/…" style="min-width:320px" />
+        </div>
+
+        <div class="field" id="fFile" hidden>
+          <span>视频文件</span>
+          <input type="file" id="liveFile" accept="video/mp4,video/quicktime,video/x-msvideo,video/x-matroska,video/webm" />
+        </div>
+
+        <div class="field">
+          <span>识别频率</span>
+          <select id="interval">
+            <option value="0">每帧尽力（最准、最慢）</option>
+            <option value="200" selected>每 200 ms</option>
+            <option value="500">每 500 ms</option>
+            <option value="1000">每 1 秒</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <span>检测档位</span>
+          <select id="level">
+            <option value="low" selected>low · 320px（快）</option>
+            <option value="high">high · 640px（准）</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <span>画面宽度</span>
+          <select id="maxSide">
+            <option value="480">480</option>
+            <option value="640" selected>640</option>
+            <option value="960">960</option>
+            <option value="1280">1280</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <span>识别灵敏度</span>
+          <select id="sens">
+            <option value="0.5,0.6" selected>标准（0.5 / 0.6）</option>
+            <option value="0.3,0.35">宽松（0.3 / 0.35）· 玩具车/小车牌</option>
+            <option value="0.15,0.15">极宽松（0.15 / 0.15）· 易误报</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <span>画面标注</span>
+          <select id="showObjects">
+            <option value="true" selected>标注车辆 / 行人</option>
+            <option value="false">只标车牌</option>
+          </select>
+        </div>
+
+        <button class="btn btn--primary" id="startBtn">开始实时识别</button>
+        <button class="btn btn--danger" id="stopBtn" disabled>停止</button>
+        <button class="btn" id="demoBtn">用示例视频试试</button>
+      </div>
+      <p class="note" id="note">正在探测本机摄像头…</p>
+    </div>
+  </section>
+
+  <div class="grid">
+    <section class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">实时画面</h2>
+        <span class="panel__meta" id="viewMeta"></span>
+      </div>
+      <div class="view" id="view">
+        <div class="badge" id="badge"><span class="badge__dot" aria-hidden="true"></span>LIVE</div>
+        <div class="view__ph" id="viewPh">还没有画面。选好来源并点「开始实时识别」，这里会实时播放带车牌框的画面。</div>
+        <img id="liveImg" alt="实时识别画面" hidden />
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel__head">
+        <h2 class="panel__title">实时统计</h2>
+        <span class="panel__meta" id="statMeta"></span>
+      </div>
+      <div class="kpis">
+        <div class="kpi"><span>运行状态</span><b class="is-dim" id="kStatus">未开始</b></div>
+        <div class="kpi"><span>已运行</span><b class="is-dim" id="kElapsed">—</b></div>
+        <div class="kpi"><span>推送帧率</span><b class="is-dim" id="kFps">—</b></div>
+        <div class="kpi"><span>识别频率</span><b class="is-dim" id="kRecog">—</b></div>
+        <div class="kpi"><span>识别车牌数</span><b class="is-dim" id="kEvents">0</b></div>
+        <div class="kpi"><span>命中帧合计</span><b class="is-dim" id="kHits">0</b></div>
+        <div class="kpi"><span>单次识别耗时</span><b class="is-dim" id="kCost">—</b></div>
+        <div class="kpi"><span>已推送 / 已读帧</span><b class="is-dim" id="kFrames">0 / 0</b></div>
+      </div>
+      <div class="panel__head" style="border-top:1px solid var(--line-2)">
+        <h2 class="panel__title">识别到的车牌</h2>
+        <span class="panel__meta" id="evMeta"></span>
+      </div>
+      <div class="evlist" id="evList">
+        <div class="empty">还没有识别到车牌。</div>
+      </div>
+      <details class="tips">
+        <summary>点「开始」后一直黑屏 / 报没有读到帧？</summary>
+        <ol>
+          <li><strong>没有可用摄像头</strong>：本页会用「能打开**且能读到一帧**」来判定设备是否可用，
+              只在设备列表里出现的就是可用的。一台都没有时会自动切到「本地视频」，
+              直接点「用示例视频试试」也能立刻看到效果。</li>
+          <li><strong>摄像头被别的程序占用</strong>：微信/钉钉/相机应用会独占设备，关掉再试。</li>
+          <li><strong>首帧可能要等几秒</strong>：驱动唤醒慢属正常，超过 30s 仍无帧才会判定失败（看门狗）。</li>
+          <li><strong>RTSP 地址不通或需鉴权</strong>：先用 VLC 确认这个地址能播，再填到这里。</li>
+          <li><strong>网页视频链接（微博 / 好看视频 / 抖音 / B站等）</strong>：直接粘贴链接即可，
+              服务端会自动解析出真实视频地址再拉流（首次解析多花几秒属正常）。
+              需要登录 / 已删除 / 仅粉丝可见的视频解析不了，会明确报错。</li>
+          <li>把 <code>backend</code>/<code>首帧</code> 两个指标贴出来，就能判断是设备问题还是配置问题。</li>
+        </ol>
+      </details>
+      <details class="tips">
+        <summary>远景 / 航拍车流为什么很多车没有车牌？</summary>
+        <ol>
+          <li><strong>这不是故障，是像素极限</strong>：车辆被检出（绿框 <code>car 0.xx</code>）说明检测正常，
+              但航拍/远景里每辆车只有几十像素宽，<strong>车牌只有 25~50 像素</strong>——
+              中文车牌可靠识别需要 100px 以上且接近正面视角。实测把这类车放大 4 倍，
+              车牌仍是一团模糊色块，人眼也无法辨认。</li>
+          <li>调灵敏度 / 换高档位都<strong>救不了这一类</strong>：放大插值不产生新信息。</li>
+          <li>素材里<strong>近景经过的车辆</strong>（车牌占画面足够大）会被正常读出——
+              右侧「识别到的车牌」列表就是本素材里全部可读的车牌。</li>
+          <li>想识别这类场景只能换<strong>卡口 / 近景机位</strong>的素材，或提高摄像机分辨率并对准车道。</li>
+        </ol>
+      </details>
+      <details class="tips">
+        <summary>玩具车 / 小车牌识别不出来？</summary>
+        <ol>
+          <li>把「识别灵敏度」调到<strong>宽松</strong>或<strong>极宽松</strong>，再点一次「开始实时识别」。</li>
+          <li>画面上会出现<strong>灰色的「疑似车牌」框</strong>——那说明<strong>检测到了</strong>，
+              只是置信度没过阈值（框上会写具体数值，例如"疑似车牌 检测置信度低 0.31 &lt; 0.50"）。
+              连灰框都没有，就是检测这一步就没发现它。</li>
+          <li>玩具车牌不是标准车牌（识别模型按真实车牌训练），字符样式对不上时识别不出来属正常；
+              凑近一点、档位切 <code>high</code>、用正对角度会更有机会。</li>
+          <li>「画面标注」选<strong>标注车辆 / 行人</strong>后，玩具车若被当作"car"检出来，
+              会画绿色细框并标注 <code>car 0.xx</code>。</li>
+        </ol>
+      </details>
+      <details class="tips">
+        <summary>为什么画面看起来"不够流畅"？</summary>
+        <ol>
+          <li>识别是瓶颈：本机 CPU 上单次识别约 0.3–1 秒（取决于档位与画面宽度）。</li>
+          <li>画面按<strong>源帧率</strong>播放，识别按「识别频率」节流；中间帧沿用最近一次的识别结果画框。</li>
+          <li>想要更快：档位调 <code>low</code>、画面宽度降到 <code>480</code>、识别频率放到 <code>500ms/1s</code>。</li>
+          <li>直播源处理不过来时会<strong>丢帧追赶</strong>（单次上限约 2 秒的帧量），宁可少看几帧也不让延迟越滚越大。</li>
+          <li>真"25fps 全帧实时"需要 GPU，当前是 CPU 降级路径。</li>
+        </ol>
+      </details>
+    </section>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var API = (function () {
+    var q = new URLSearchParams(location.search).get("api");
+    if (q) return q.replace(/\/+$/, "");
+    return location.protocol === "file:" ? "http://127.0.0.1:8000" : "";
+  })();
+
+  var MAX_VIDEO_BYTES = 200 * 1024 * 1024;
+  var POLL_MS = 1000;
+
+  var COLOR_LABEL = { blue: "蓝牌", green: "绿牌", yellow: "黄牌", white: "白牌", black: "黑牌" };
+  var PLATE_CLASSES = ["blue", "green", "yellow", "white", "black"];
+
+  var el = function (id) { return document.getElementById(id); };
+  var tabBtns = document.querySelectorAll("#srcSeg button");
+  var liveImg = el("liveImg"), viewPh = el("viewPh"), badge = el("badge");
+
+  var srcMode = "camera";
+  var session = null;      // {session_id, mjpeg_url, status_url, media_base}
+  var pollTimer = null;
+  var seenEvents = -1;
+  var demoBlob = null;     // 「用示例视频试试」下载后的文件（无需用户手选）
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function mediaUrl(u) { return !u ? "" : (/^https?:/.test(u) ? u : API + u); }
+  function fmtSecs(v) {
+    if (typeof v !== "number" || !isFinite(v) || v < 0) return "—";
+    return v < 60 ? v.toFixed(1) + " s" : Math.floor(v / 60) + " 分 " + Math.round(v % 60) + " 秒";
+  }
+  function setNum(id, text, dim) {
+    var node = el(id);
+    node.textContent = text;
+    node.classList.toggle("is-dim", !!dim);
+  }
+  function note(text, kind) {
+    el("note").textContent = text || "";
+    el("note").classList.toggle("note--err", kind === "err");
+    el("note").classList.toggle("note--ok", kind === "ok");
+  }
+  function plateClass(c) { return PLATE_CLASSES.indexOf(c) >= 0 ? c : "unknown"; }
+  function plateChip(no, color) {
+    return '<span class="plate plate--' + plateClass(color) + '"><span class="plate__no">' +
+      esc(no || "—") + "</span></span>";
+  }
+  function setBusy(running) {
+    el("startBtn").disabled = running;
+    el("stopBtn").disabled = !running;
+    el("demoBtn").disabled = running;
+    tabBtns.forEach(function (b) { b.disabled = running; });
+    ["cameraIdx", "rtspUrl", "liveFile", "interval", "level", "maxSide", "sens", "showObjects"].forEach(function (id) {
+      el(id).disabled = running;
+    });
+  }
+
+  // ---------------- 来源切换 ----------------
+  function setSrcMode(m) {
+    srcMode = m;
+    tabBtns.forEach(function (b) { b.classList.toggle("is-active", b.dataset.src === m); });
+    el("fCamera").hidden = m !== "camera";
+    el("fRtsp").hidden = m !== "rtsp";
+    el("fFile").hidden = m !== "file";
+  }
+  tabBtns.forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      setSrcMode(btn.dataset.src);
+      note("");
+    });
+  });
+  el("liveFile").addEventListener("change", function () {
+    if (el("liveFile").files && el("liveFile").files.length) {
+      demoBlob = null;          // 用户自己选了文件，示例视频作废
+      note("已选择：" + el("liveFile").files[0].name);
+    }
+  });
+
+  // ---------------- 设备探测 ----------------
+  // 只用"能打开**且能读到一帧**"的设备；一台都没有时自动切到本地视频，
+  // 免得用户一上来就点到一个只会黑屏的索引（真实事故：默认的摄像头 0 在本机取不到帧）。
+  async function probeDevices() {
+    var sel = el("cameraIdx");
+    try {
+      var r = await fetch(API + "/stream/devices?count=4");
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      var d = (await r.json()).data || {};
+      var avail = d.available || [];
+      if (avail.length) {
+        sel.innerHTML = avail.map(function (i) {
+          var dev = (d.devices || []).filter(function (x) { return x.index === i; })[0] || {};
+          return '<option value="' + i + '">摄像头 ' + i + "（" + esc(dev.backend || "?") +
+            " · 首帧 " + Math.round(dev.first_frame_ms || 0) + "ms）</option>";
+        }).join("");
+        note(d.note || "", "ok");
+        return;
+      }
+      sel.innerHTML = '<option value="">未检测到可用摄像头</option>';
+      setSrcMode("file");
+      note(d.note || "未检测到可用摄像头，已切到「本地视频」。", "err");
+    } catch (e) {
+      sel.innerHTML = '<option value="0">摄像头 0（探测失败）</option>';
+      note("摄像头探测失败：服务是否在运行？也可改用「本地视频」。", "err");
+    }
+  }
+
+  // ---------------- 启动 / 停止 ----------------
+
+  function buildForm() {
+    var fd = new FormData();
+    if (srcMode === "camera") {
+      var idx = (el("cameraIdx").value || "").trim();
+      if (!/^\d+$/.test(idx)) { note("没有可用的摄像头索引，请改用「本地视频」或「示例视频」。", "err"); return null; }
+      fd.append("source", idx);
+    } else if (srcMode === "rtsp") {
+      var url = (el("rtspUrl").value || "").trim();
+      var okStream = /^(rtsps?|rtmps?|udp|tcp):\/\//i.test(url);
+      var okLink = /^https?:\/\//i.test(url);
+      if (!okStream && !okLink) {
+        note("要以 rtsp:// 开头，或粘贴视频网页链接（微博 / 抖音 / B站 / YouTube 等）。", "err");
+        return null;
+      }
+      fd.append("source", url);
+    } else {
+      var picked = el("liveFile").files && el("liveFile").files[0];
+      var f = picked || demoBlob;
+      if (!f) { note("请先选择一个视频文件，或点「用示例视频试试」。", "err"); return null; }
+      if (f.size > MAX_VIDEO_BYTES) { note("视频不能超过 200 MB，请先压缩或截短。", "err"); return null; }
+      fd.append("file", f, f.name || "clip.mp4");
+    }
+    fd.append("interval_ms", el("interval").value);
+    fd.append("level", el("level").value);
+    fd.append("max_side", el("maxSide").value);
+    // 灵敏度 = 识别阈值（det / rec）：玩具车、小车牌经常低于默认阈值
+    var sens = (el("sens").value || "0.5,0.6").split(",");
+    fd.append("min_det", sens[0]);
+    fd.append("min_rec", sens[1]);
+    fd.append("show_objects", el("showObjects").value);
+    return fd;
+  }
+
+  function describeSource() {
+    if (srcMode === "camera") return "摄像头 " + (el("cameraIdx").value || "?");
+    if (srcMode === "rtsp") {
+      var u = (el("rtspUrl").value || "").trim();
+      return /^https?:\/\//i.test(u) ? "网页视频链接" : "RTSP 流";
+    }
+    var picked = el("liveFile").files && el("liveFile").files[0];
+    return picked ? picked.name : (demoBlob ? "示例视频" : "本地视频");
+  }
+
+  async function start() {
+    var fd = buildForm();
+    if (!fd) return;
+    setBusy(true);
+    seenEvents = -1;
+    el("evList").innerHTML = '<div class="empty">正在启动…</div>';
+    el("srcMeta").textContent = describeSource();
+    note("正在加载模型并启动会话（首次约几秒；摄像头首帧可能要等几秒）…");
+    var t0 = performance.now();
+    try {
+      var res = await fetch(API + "/stream", { method: "POST", body: fd });
+      var body = null;
+      try { body = await res.json(); } catch (e) { body = null; }
+      if (!res.ok) {
+        var d = body && (body.detail || body.msg);
+        var msg = (typeof d === "string" && d) || ("服务返回 " + res.status);
+        if (res.status === 429) msg = (typeof d === "string" ? d : "已有实时会话在跑，请先停止");
+        note(msg, "err");
+        setBusy(false);
+        resetView();
+        return;
+      }
+      session = body.data;
+      liveImg.hidden = false;
+      viewPh.hidden = true;
+      // 加时间戳破缓存：同一个 URL 二次打开时浏览器可能复用旧连接
+      liveImg.src = mediaUrl(session.mjpeg_url) + "?t=" + Date.now();
+      badge.classList.add("badge--on");
+      note("会话已启动（耗时 " + ((performance.now() - t0) / 1000).toFixed(1) +
+           " s）。首帧到达后画面就会出现。");
+      pollTimer = setTimeout(poll, 400);
+    } catch (err) {
+      note("连不上识别服务，确认服务已启动后重试。", "err");
+      setBusy(false);
+      resetView();
+    }
+  }
+
+  async function stop() {
+    if (!session) return;
+    var sid = session.session_id;
+    try { await fetch(API + "/stream/" + encodeURIComponent(sid), { method: "DELETE" }); }
+    catch (e) { /* 服务已断也无所谓，本地照常收尾 */ }
+    endSession("已停止。识别结果与截图仍保留在上面。");
+  }
+
+  function endSession(text) {
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    liveImg.removeAttribute("src");
+    liveImg.hidden = true;
+    viewPh.hidden = false;
+    viewPh.textContent = "会话已结束。重新点「开始实时识别」可以再跑一路。";
+    badge.classList.remove("badge--on");
+    setBusy(false);
+    if (text) note(text);
+  }
+
+  function resetView() {
+    liveImg.removeAttribute("src");
+    liveImg.hidden = true;
+    viewPh.hidden = false;
+    viewPh.textContent = "还没有画面。选好来源并点「开始实时识别」，这里会实时播放带车牌框的画面。";
+    badge.classList.remove("badge--on");
+  }
+
+  // ---------------- 轮询状态 ----------------
+
+  async function poll() {
+    if (!session) return;
+    var res;
+    try {
+      res = await fetch(API + session.status_url);
+    } catch (e) {
+      note("状态轮询中断，稍后重试…", "err");
+      pollTimer = setTimeout(poll, POLL_MS * 2);
+      return;
+    }
+    if (!res.ok) {
+      endSession("会话已不存在（可能被服务端清理）。");
+      return;
+    }
+    var d = (await res.json()).data;
+    renderStats(d);
+    renderEvents(d);
+    if (d.status === "failed") {
+      note(d.error || "会话失败。", "err");
+      endSession(null);
+      return;
+    }
+    if (d.status === "stopped") {
+      endSession("源已播放完毕或会话已停止。");
+      return;
+    }
+    pollTimer = setTimeout(poll, POLL_MS);
+  }
+
+  function renderStats(d) {
+    var s = d.stats || {};
+    var label = { starting: "启动中", running: "运行中", stopped: "已停止", failed: "失败" }[d.status] || d.status;
+    setNum("kStatus", label, d.status !== "running");
+    setNum("kElapsed", fmtSecs(s.elapsed_s), false);
+    setNum("kFps", (s.push_fps || 0).toFixed(1) + " fps", !s.push_fps);
+    setNum("kRecog", (s.recog_fps || 0).toFixed(2) + " 次/秒", !s.recog_fps);
+    setNum("kEvents", String(s.events || 0), false);
+    setNum("kHits", String(s.total_hits || 0), false);
+    setNum("kCost", s.avg_recog_ms ? s.avg_recog_ms.toFixed(0) + " ms" : "—", !s.avg_recog_ms);
+    setNum("kFrames", (s.frames || 0) + " / " + (s.read_frames || 0), false);
+
+    var meta = [];
+    meta.push(s.live ? "直播源" : "文件源");
+    if (s.backend) meta.push("后端 " + s.backend);
+    if (s.first_frame_ms) meta.push("首帧 " + Math.round(s.first_frame_ms) + "ms");
+    if (s.source_fps) meta.push(s.source_fps + " fps 源");
+    if (s.source_frames) meta.push("共 " + s.source_frames + " 帧");
+    if (s.skipped) meta.push("丢帧 " + s.skipped);
+    if (s.recog_dropped) meta.push("识别丢帧 " + s.recog_dropped);
+    meta.push("识别间隔 " + s.interval_ms + " ms");
+    meta.push("画面 " + s.max_side + "px");
+    el("viewMeta").textContent = meta.join(" · ");
+  }
+
+  function renderEvents(d) {
+    var events = d.events || [];
+    el("evMeta").textContent = events.length ? events.length + " 个" : "";
+    if (events.length === seenEvents) return;
+    var isFirst = seenEvents < 0;
+    seenEvents = events.length;
+    if (!events.length) {
+      el("evList").innerHTML = '<div class="empty">还没有识别到车牌。</div>';
+      return;
+    }
+    el("evList").innerHTML = events.map(function (ev, i) {
+      var shot = ev.shot && d.media_base
+        ? '<img class="ev__shot" src="' + esc(mediaUrl(d.media_base) + "/" + ev.shot) +
+          '" alt="' + esc(ev.plate_no) + ' 截图" onerror="this.style.visibility=&#39;hidden&#39;">'
+        : '<div class="ev__shot"></div>';
+      var fresh = (!isFirst && i === events.length - 1) ? " ev--new" : "";
+      return '<div class="ev' + fresh + '">' + shot + "<div>" +
+        '<div class="ev__no">' + plateChip(ev.plate_no, ev.plate_color) + "</div>" +
+        '<div class="ev__meta">' + fmtSecs(ev.t_sec) + " 首现 · 命中 " + ev.hits + " 帧 · 检测 " +
+          (ev.det_score || 0).toFixed(2) + " / 识别 " + (ev.rec_score || 0).toFixed(2) +
+          " · " + esc(COLOR_LABEL[ev.plate_color] || ev.plate_color || "—") + "</div>" +
+        "</div></div>";
+    }).join("");
+  }
+
+  // ---------------- 示例视频（没有摄像头也能立刻看到效果）--------------
+  el("demoBtn").addEventListener("click", async function () {
+    note("正在取示例视频…");
+    try {
+      var r = await fetch(API + "/static/demo.mp4");
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      var blob = await r.blob();
+      try { demoBlob = new File([blob], "demo.mp4", { type: blob.type || "video/mp4" }); }
+      catch (e) { demoBlob = blob; }
+      el("liveFile").value = "";
+      setSrcMode("file");
+      note("示例视频已就绪（" + (blob.size / 1048576).toFixed(2) +
+           " MB）——点「开始实时识别」即可，无需准备素材。", "ok");
+    } catch (e) {
+      note("示例视频不可用：" + e.message, "err");
+    }
+  });
+
+  // ---------------- 绑定与探活 ----------------
+
+  el("startBtn").addEventListener("click", start);
+  el("stopBtn").addEventListener("click", stop);
+  // 页面关掉后**不由前端负责收尾**：服务端有"无人消费超过 60s 自动停止"的兜底。
+  // （sendBeacon 只能发 POST，用它发 DELETE 是错的，宁可不发。）
+
+  (async function health() {
+    try {
+      var r = await fetch(API + "/health");
+      if (!r.ok) throw new Error("bad");
+      var b = await r.json();
+      el("status").dataset.state = "ok";
+      el("statusText").textContent = "服务在线 · " + (b.model_ver || "v1.0") +
+        (b.gpu ? " · GPU" : " · CPU") + (b.engine === "on" ? " · 引擎开" : "");
+    } catch (e) {
+      el("status").dataset.state = "bad";
+      el("statusText").textContent = "服务未连接";
+    }
+  })();
+
+  probeDevices();
+})();
+</script>
+</body>
+</html>
