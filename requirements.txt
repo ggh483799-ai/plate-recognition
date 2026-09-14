@@ -22,9 +22,9 @@ matplotlib>=3.7
 # ---- 推理 / 部署 ----
 onnx>=1.16
 onnxruntime>=1.18       # CPU 版推理后端（GPU 环境换 onnxruntime-gpu）
-hyperlpr3>=0.1.3        # 中文车牌端到端识别（检测+识别+分类 ONNX，Apache-2.0）
-                        # 训练权重就绪前的兜底引擎，见 src/models/hyperlpr_engine.py
-                        # 建议 pip install hyperlpr3 --no-deps（原因见文末）
+# hyperlpr3>=0.1.3      # 不进 requirements！其声明依赖 opencv-python（覆盖 headless）
+#                       # 与 fastapi==0.92（降级），必须 --no-deps 安装——Dockerfile 已处理；
+#                       # 本地手动装：pip install --no-deps hyperlpr3（兜底引擎，见文末说明）
 fastapi>=0.110
 uvicorn[standard]>=0.29
 pydantic>=2.0

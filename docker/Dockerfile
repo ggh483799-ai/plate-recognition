@@ -7,7 +7,10 @@ WORKDIR /app
 # 注意顺序：requirements 必须先 COPY 再 install——装依赖时它才在镜像里
 COPY requirements.txt ./
 RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu \
-    && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir --no-deps hyperlpr3
+# hyperlpr3 必须 --no-deps：其声明依赖 opencv-python（覆盖 headless，缺 libxcb 崩溃）
+# 和 fastapi==0.92（把本项目 fastapi 降级）。真实依赖已由上面 requirements 覆盖
 
 COPY . .
 
