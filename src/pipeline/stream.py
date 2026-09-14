@@ -83,6 +83,56 @@ def is_live_source(source) -> bool:
     return text.startswith(LIVE_PREFIXES)
 
 
+def stats_payload(
+    *,
+    frames: int,
+    read_frames: int,
+    skipped: int,
+    recog_runs: int,
+    recog_dropped: int,
+    recog_cost_ms: float,
+    events: int,
+    total_hits: int,
+    elapsed: float,
+    fps: float | None = None,
+    total_frames: int = 0,
+    live: bool = False,
+    interval_s: float = 0.0,
+    max_side: int = 640,
+    jpeg_quality: int = 75,
+    warmup_ms: float = 0.0,
+    first_frame_ms: float = 0.0,
+    backend: str = "",
+) -> dict:
+    """实时会话统计字段的唯一构造处（拉流会话与浏览器摄像头会话共用）。
+
+    抽出来的理由：两个会话的统计口径必须一致（前端同一套 KPI 面板、`StreamStats` 同一个模型），
+    复制一份迟早会漂移——改了 A 忘了 B，线上就会出现"某个链路少一个字段"的怪现象。
+    """
+    return {
+        "frames": frames,
+        "read_frames": read_frames,
+        "skipped": skipped,
+        "recog_runs": recog_runs,
+        "recog_dropped": recog_dropped,
+        "avg_recog_ms": round(recog_cost_ms / recog_runs, 1) if recog_runs else 0.0,
+        "events": events,
+        "total_hits": total_hits,
+        "elapsed_s": round(elapsed, 1),
+        "push_fps": round(frames / elapsed, 1),
+        "recog_fps": round(recog_runs / elapsed, 2),
+        "source_fps": fps,
+        "source_frames": total_frames or None,
+        "live": live,
+        "interval_ms": int(round(interval_s * 1000)),
+        "max_side": max_side,
+        "jpeg_quality": jpeg_quality,
+        "warmup_ms": round(warmup_ms, 1),
+        "first_frame_ms": round(first_frame_ms, 1),
+        "backend": backend,
+    }
+
+
 class LiveStreamSession:
     """一路实时识别会话：读帧线程 + 识别线程 + 最新帧缓冲，可随时 stop，状态可查。"""
 
@@ -261,28 +311,26 @@ class LiveStreamSession:
         with self._lock:
             elapsed = max(1e-6, (self.finished_at or time.time()) - self.started_at)
             events = [ev.to_dict() for ev in self.dedup.history]
-            stats = {
-                "frames": self.frames,
-                "read_frames": self.read_frames,
-                "skipped": self.skipped,
-                "recog_runs": self.recog_runs,
-                "recog_dropped": self.recog_dropped,
-                "avg_recog_ms": round(self.recog_cost_ms / self.recog_runs, 1) if self.recog_runs else 0.0,
-                "events": len(self.dedup.history),
-                "total_hits": self.dedup.total_hits,
-                "elapsed_s": round(elapsed, 1),
-                "push_fps": round(self.frames / elapsed, 1),
-                "recog_fps": round(self.recog_runs / elapsed, 2),
-                "source_fps": self.fps,
-                "source_frames": self.total_frames or None,
-                "live": self.live,
-                "interval_ms": int(round(self.interval_s * 1000)),
-                "max_side": self.max_side,
-                "jpeg_quality": self.jpeg_quality,
-                "warmup_ms": round(self.warmup_ms, 1),
-                "first_frame_ms": round(self.first_frame_ms, 1),
-                "backend": self.backend,
-            }
+            stats = stats_payload(
+                frames=self.frames,
+                read_frames=self.read_frames,
+                skipped=self.skipped,
+                recog_runs=self.recog_runs,
+                recog_dropped=self.recog_dropped,
+                recog_cost_ms=self.recog_cost_ms,
+                events=len(self.dedup.history),
+                total_hits=self.dedup.total_hits,
+                elapsed=elapsed,
+                fps=self.fps,
+                total_frames=self.total_frames,
+                live=self.live,
+                interval_s=self.interval_s,
+                max_side=self.max_side,
+                jpeg_quality=self.jpeg_quality,
+                warmup_ms=self.warmup_ms,
+                first_frame_ms=self.first_frame_ms,
+                backend=self.backend,
+            )
             status, error = self.status, self.error
         return {
             "session_id": self.session_id,

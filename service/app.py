@@ -12,7 +12,11 @@
     POST /predict_batch           多图批量识别（一张失败不影响其余）
     POST /predict_video           提交视频识别任务（异步，立即返回 job_id）
     GET  /predict_video/{job_id}  查询任务进度 / 结果
-    POST /stream                  启动实时识别会话（摄像头 / RTSP / 本地视频）
+    POST /stream                  启动实时识别会话（服务器摄像头 / RTSP / 网页链接 / 本地视频）
+    POST /camera/session          启动浏览器摄像头会话（帧由前端推上来，服务端只识别）
+    POST /camera/{id}/frame       推一帧 → 返回识别框与统计
+    GET  /camera/{id}             浏览器摄像头会话状态 / 已识别车牌
+    DELETE /camera/{id}           结束摄像头会话（?purge=true 连产物一起删）
     GET  /stream/{id}.mjpg        MJPEG 推流（边播边识别，`<img>` 直接显示）
     GET  /stream/{id}             实时会话状态 / 已识别车牌
     DELETE /stream/{id}           停止会话（?purge=true 连产物一起删）
@@ -51,14 +55,20 @@ from fastapi.responses import FileResponse, StreamingResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from starlette.concurrency import run_in_threadpool  # noqa: E402
 
+from service.cameras import MEDIA_BASE_PREFIX, CameraSessionManager, TooManyCameras  # noqa: E402
 from service.jobs import VideoJobManager, _remove_tree  # noqa: E402
 from service.schemas import (  # noqa: E402
     BatchItem,
     BatchPredictData,
     BatchPredictResponse,
+    CameraBoxItem,
     CameraDevice,
     CameraDevicesData,
     CameraDevicesResponse,
+    CameraFrameData,
+    CameraFrameResponse,
+    CameraSessionStartData,
+    CameraSessionStartResponse,
     HealthResponse,
     PlateItem,
     PredictBase64Request,
@@ -66,8 +76,10 @@ from service.schemas import (  # noqa: E402
     PredictResponse,
     StreamStartData,
     StreamStartResponse,
+    StreamStats,
     StreamStatusData,
     StreamStatusResponse,
+    VideoEventItem,
     VideoJobStartData,
     VideoJobStartResponse,
     VideoJobStatusData,
@@ -87,12 +99,14 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 RUNS_DIR = BASE_DIR / "runs"
 JOBS_DIR = RUNS_DIR / "jobs"
 STREAMS_DIR = RUNS_DIR / "streams"
+CAMERAS_DIR = RUNS_DIR / "cameras"     # 浏览器摄像头会话产物（与拉流会话分开挂载）
 
 # 上传限制
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MAX_VIDEO_BYTES = 200 * 1024 * 1024
 MAX_BATCH_FILES = 20
 UPLOAD_CHUNK = 1 << 20  # 1MB：边收边落盘，避免整段视频进内存
+MAX_CAMERA_FRAME_BYTES = 6 * 1024 * 1024   # 单帧 JPEG 上限（640px 正常只有 30-80KB）
 
 VIDEO_SUFFIXES = {
     ".mp4", ".m4v", ".mov", ".avi", ".mkv", ".webm", ".flv", ".wmv", ".mpg", ".mpeg", ".ts",
@@ -146,6 +160,30 @@ def _build_stream_pipeline(level: str | None = None,
 
 _video_manager = VideoJobManager(JOBS_DIR, pipeline_factory=_build_video_pipeline)
 _stream_manager = StreamManager(STREAMS_DIR, pipeline_factory=_build_stream_pipeline)
+# 浏览器摄像头：帧由前端推上来（云服务器上没有"用户本机的摄像头"，只能这么走）
+_camera_manager = CameraSessionManager(CAMERAS_DIR, pipeline_factory=_build_stream_pipeline)
+
+
+# 后台维护周期：回收"没人推帧"的摄像头会话、清理过期产物
+MAINTENANCE_INTERVAL_S = 30.0
+
+
+async def _maintenance_loop() -> None:
+    """周期性收尾：摄像头会话没有长连接，只能按"多久没收到帧"回收。
+
+    顺带把拉流会话/视频任务的过期产物清理也放进这个循环——它们以前只在服务启动时跑一次，
+    长时间运行的服务会一直堆着旧产物。
+    """
+    while True:
+        await asyncio.sleep(MAINTENANCE_INTERVAL_S)
+        for name, fn in (("摄像头会话回收", _camera_manager.expire_idle),
+                         ("摄像头产物", _camera_manager.purge),
+                         ("实时会话产物", _stream_manager.purge),
+                         ("视频任务产物", _video_manager.purge_expired)):
+            try:
+                await run_in_threadpool(fn)
+            except Exception as exc:  # 维护失败不能影响服务
+                log.warning("[Service] %s失败: %s", name, exc)
 
 
 @asynccontextmanager
@@ -158,14 +196,19 @@ async def lifespan(app: FastAPI):
         _load_error = str(exc)
         log.error("[Service] 模型加载失败（降级运行）: %s", exc)
     # 启动时顺手清掉过期产物（服务被反复重启也不会把磁盘堆满）
-    for name, purge in (("视频任务", _video_manager.purge_expired), ("实时会话", _stream_manager.purge)):
+    for name, purge in (("视频任务", _video_manager.purge_expired),
+                        ("实时会话", _stream_manager.purge),
+                        ("摄像头会话", _camera_manager.purge)):
         try:
             purge()
         except Exception as exc:  # 清理失败不该影响启动
             log.warning("[Service] 清理过期%s失败: %s", name, exc)
+    maintenance = asyncio.create_task(_maintenance_loop())
     yield
+    maintenance.cancel()
     _video_manager.shutdown(wait=False)
     _stream_manager.stop_all(timeout=1.0)
+    _camera_manager.stop_all(timeout=1.0)
 
 
 app = FastAPI(
@@ -189,8 +232,10 @@ if STATIC_DIR.is_dir():
 # 产物目录：目录名是服务端生成的 hex 编号，无路径穿越风险
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 STREAMS_DIR.mkdir(parents=True, exist_ok=True)
+CAMERAS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=JOBS_DIR), name="media")
 app.mount("/stream-media", StaticFiles(directory=STREAMS_DIR), name="stream_media")
+app.mount(MEDIA_BASE_PREFIX, StaticFiles(directory=CAMERAS_DIR), name="camera_media")
 
 
 def _html_page(filename: str) -> FileResponse:
@@ -625,4 +670,136 @@ async def stream_stop(session_id: str, purge: bool = False) -> dict:
         return {"code": 0, "msg": "success", "data": data}
     if not _stream_manager.stop(session_id):
         raise HTTPException(status_code=404, detail="会话不存在")
+    return {"code": 0, "msg": "success", "data": {"session_id": session_id, "stopped": True}}
+
+
+# ============================================================
+# 浏览器摄像头（帧由前端推上来，服务端只做识别）
+#
+# 为什么单独一条链路：页面部署在云上时，「本机摄像头」只能是**看网页的人**手里的摄像头。
+# 服务端打不开它（`/stream/devices` 探测的是服务器自己的设备，云服务器上必然是"未检测到"），
+# 所以由浏览器采集 + 推帧，服务端只回识别结果，画面在客户端本地原生播放。
+# ============================================================
+
+def _camera_boxes(payload: dict) -> list[CameraBoxItem]:
+    """把会话返回的 plates / objects 拍平成一串"要画的框"。
+
+    三层刻意分开（与拉流会话的画面标注口径一致）：
+        车牌（粗线 + 号牌） ＞ 车辆/行人（细线 + 类别）＞ 疑似车牌（灰线 + 原因）
+    """
+    boxes = [
+        CameraBoxItem(kind="plate", label=p["plate_no"], score=p["det_score"], bbox=p["bbox"],
+                      plate_color=p["plate_color"], rec_score=p["rec_score"])
+        for p in payload.get("plates") or []
+    ]
+    for obj in payload.get("objects") or []:
+        boxes.append(CameraBoxItem(kind=obj.get("kind", "vehicle"), label=obj.get("label", ""),
+                                   score=obj.get("score", 0.0), bbox=obj.get("bbox") or []))
+    return boxes
+
+
+@app.post("/camera/session", response_model=CameraSessionStartResponse)
+async def camera_session_start(
+    interval_ms: int = Form(200),
+    level: str = Form("low"),
+    max_side: int = Form(640),
+    min_det: float = Form(0.5),
+    min_rec: float = Form(0.6),
+    show_objects: bool = Form(True),
+) -> CameraSessionStartResponse:
+    """开一个浏览器摄像头会话：前端拿到 `frame_url` 后按 `interval_ms` 推帧。
+
+    与 `/stream` 的区别：`/stream` 是服务端去拉流（摄像头索引 / RTSP / 网页链接 / 本地视频）；
+    本接口是**客户端推帧**——因为摄像头在用户那边，服务端够不着。
+    （注意本路由必须注册在 `/camera/{session_id}` 之前，否则 "session" 会被当成会话号。）
+    """
+    _require_pipeline()
+    level = level if level in ("low", "high") else "low"
+    min_det = _clamp_score(min_det, 0.5)
+    min_rec = _clamp_score(min_rec, 0.6)
+    session_id = uuid4().hex[:16]
+    try:
+        session = await run_in_threadpool(
+            _camera_manager.create, session_id,
+            interval_ms=interval_ms, level=level, max_side=max_side,
+            min_det_score=min_det, min_rec_score=min_rec, show_objects=show_objects,
+        )
+    except TooManyCameras as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except Exception as exc:
+        log.exception("[Service] 创建摄像头会话失败")
+        raise HTTPException(status_code=500, detail=f"创建摄像头会话失败: {exc}") from exc
+
+    log.info("[Service] 摄像头会话已创建: %s interval=%dms level=%s size=%d",
+             session_id, session.interval_s * 1000, level, session.max_side)
+    return CameraSessionStartResponse(data=CameraSessionStartData(
+        session_id=session_id,
+        status=session.status,
+        frame_url=f"/camera/{session_id}/frame",
+        status_url=f"/camera/{session_id}",
+        media_base=session.media_base,
+        interval_ms=int(round(session.interval_s * 1000)),
+        max_side=session.max_side,
+        level=level,
+        max_frame_bytes=MAX_CAMERA_FRAME_BYTES,
+        info="画面帧会上传到服务器做识别（不回传原图）；识别结果与车牌截图按会话保留。",
+    ))
+
+
+@app.post("/camera/{session_id}/frame", response_model=CameraFrameResponse)
+async def camera_frame(session_id: str, file: UploadFile = File(...)) -> CameraFrameResponse:
+    """收一帧（JPEG/PNG）→ 识别 → 返回要画的框与统计。
+
+    客户端按自己的节奏推（建议 = `interval_ms`）；服务端会再按同一间隔节流，
+    间隔内的帧直接返回上次结果（`reused=true`），推理忙时丢帧并计数——永远不排队。
+    """
+    if _camera_manager.get(session_id) is None:
+        raise HTTPException(status_code=404, detail="摄像头会话不存在（可能已超时回收，请重新开始）")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="收到空帧")
+    if len(data) > MAX_CAMERA_FRAME_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"单帧超过 {MAX_CAMERA_FRAME_BYTES // 1048576} MB；请调小「画面宽度」或降低 JPEG 质量")
+    try:
+        payload = await run_in_threadpool(_camera_manager.ingest, session_id, data)
+    except ValueError as exc:                       # 解码失败：客户端发的东西不对
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if payload is None:
+        raise HTTPException(status_code=404, detail="摄像头会话不存在（可能已超时回收，请重新开始）")
+    return CameraFrameResponse(data=CameraFrameData(
+        session_id=payload["session_id"],
+        status=payload["status"],
+        reused=payload["reused"],
+        boxes=_camera_boxes(payload),
+        frame_size=payload["frame_size"],
+        stats=StreamStats(**payload["stats"]),
+        events=[VideoEventItem(**e) for e in payload["events"]],
+        media_base=payload["media_base"],
+    ))
+
+
+@app.get("/camera/{session_id}", response_model=StreamStatusResponse)
+async def camera_status(session_id: str) -> StreamStatusResponse:
+    """摄像头会话状态（与拉流会话同一个响应模型，前端可复用同一套面板）。"""
+    snap = _camera_manager.snapshot(session_id)
+    if snap is None:
+        raise HTTPException(status_code=404, detail="摄像头会话不存在（可能已清理）")
+    return StreamStatusResponse(data=StreamStatusData(**snap))
+
+
+@app.delete("/camera/{session_id}")
+async def camera_stop(session_id: str, purge: bool = False) -> dict:
+    """结束摄像头会话（前端停止推帧时调用）。默认保留事件与截图，`?purge=true` 连产物一起删。"""
+    if purge:
+        info = _camera_manager.remove(session_id)
+        if info is None:
+            raise HTTPException(status_code=404, detail="摄像头会话不存在")
+        data = {"discarded": True, **info}
+        if not info["purged"]:
+            data["note"] = "当前环境拦截了删除，产物仍在磁盘；可执行 python tools/clean_jobs.py --all"
+        return {"code": 0, "msg": "success", "data": data}
+    if not _camera_manager.stop(session_id):
+        raise HTTPException(status_code=404, detail="摄像头会话不存在")
     return {"code": 0, "msg": "success", "data": {"session_id": session_id, "stopped": True}}

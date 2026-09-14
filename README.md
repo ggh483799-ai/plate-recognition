@@ -15,10 +15,11 @@
 - [x] M4 服务化、压测与交付 —— 服务 + 上传识别页 + ONNX 导出 + 压测 + Docker
 - [x] M4+ 视频/摄像头/RTSP 入口 —— 逐帧识别 + 跨帧去重 + 事件 CSV/JSONL + 标注视频
 - [x] M4+ 视频/批量 HTTP 接口 —— 异步任务 + 真进度；页面直接上传视频
-- [x] M4+ **实时流识别** —— 摄像头 / RTSP / 本地视频，**边播边识别**（MJPEG 推流 + 异步识别）
+- [x] M4+ **实时流识别** —— 服务器摄像头 / RTSP / 网页链接 / 本地视频，**边播边识别**（MJPEG 推流 + 异步识别）
+- [x] M4+ **浏览器摄像头** —— 用**看网页的人**本机的摄像头（浏览器采集 + 推帧 + 结果叠画），云服务器上也能用（服务端没有摄像头设备）
 
 > **验收口径（本机无 GPU，走计划书 R2 降级路径）**：
-> 代码全链路可执行、**136 个单测全绿**、图片/视频/实时流三条链路端到端可用、
+> 代码全链路可执行、**188 个单测全绿**、图片/视频/实时流/浏览器摄像头四条链路端到端可用、
 > 真实图片与真实视频均实测读出车牌号（`粤A3333G`）、**本机摄像头实测出画面**（640×480，6 fps，
 > 且能标注行人/车辆与"疑似车牌"候选）。
 > 精度类指标（车辆 mAP≥0.95 / 整牌准确率≥92%）与"25fps 全帧实时"需 GPU + 真实数据训练后才能复现，
@@ -30,7 +31,8 @@
 |---|---|---|
 | **图片** | `POST /predict`、`POST /predict_base64`、`POST /predict_batch`（多图） | 单张截图 / 批量静态图 |
 | **视频** | `POST /predict_video` → 轮询 `GET /predict_video/{job_id}` | 上传一段视频，异步处理、可看进度、产出标注视频与事件表 |
-| **实时流** | `POST /stream` → `<img src="/stream/{id}.mjpg">` | 摄像头 / RTSP / 本地视频 / **网页视频链接**（微博、抖音、B站等，自动解析直链），**边播边识别**（页面 `/live`） |
+| **实时流** | `POST /stream` → `<img src="/stream/{id}.mjpg">` | 服务器摄像头 / RTSP / 本地视频 / **网页视频链接**（微博、抖音、B站等，自动解析直链），**边播边识别** |
+| **浏览器摄像头** | `POST /camera/session` → 逐帧 `POST /camera/{id}/frame` | 用**用户本机**的摄像头：画面在本地播放，只把帧推上去识别，结果由前端叠画（页面 `/live` 默认来源） |
 | **命令行** | `python -m src.pipeline.lpr_pipeline` / `video_pipeline` | 本地批处理、无人值守 |
 
 ## 两条推理路径
@@ -73,11 +75,11 @@ V="C:/Users/Administrator/.workbuddy/binaries/python/envs/default/Scripts/python
   每个车牌事件的截图/首现时间/命中帧数/置信度、事件 CSV 导出。
 - 两种模式都有「用示例图/示例视频试试」，走的是与手动上传完全相同的链路。
 
-### 实时流识别页（摄像头 / RTSP / 网页视频链接 / 边播边识别）
+### 实时流识别页（浏览器摄像头 / RTSP / 网页视频链接 / 边播边识别）
 
 <http://127.0.0.1:8000/live>
 
-1. 选来源：**本机摄像头索引** / **RTSP-RTMP 地址** / **本地视频文件**；
+1. 选来源：**浏览器摄像头**（默认，用你当前设备） / **RTSP-RTMP 地址或视频网页链接** / **本地视频文件**；
 2. 调参数：识别频率（每帧尽力 / 200ms / 500ms / 1s）、检测档位（low/high）、画面宽度（480–1280）；
 3. 点「开始实时识别」→ 画面立刻开始播放（带框），右侧实时刷新统计与识别到的车牌（含截图）。
 
@@ -172,7 +174,7 @@ curl -F "source=https://weibo.com/tv/show/1034:xxxx" -F "interval_ms=500" http:/
 | 端点 | 方法 | 说明 |
 |---|---|---|
 | `/` | GET | 上传识别页（图片 / 视频） |
-| `/live` | GET | 实时流识别页（摄像头 / RTSP / 边播边识别） |
+| `/live` | GET | 实时流识别页（浏览器摄像头 / RTSP / 网页链接 / 边播边识别） |
 | `/health` | GET | 探活，返回模型版本/运行时长/是否 GPU/**兜底引擎状态** `engine` |
 | `/predict` | POST | multipart 上传图片（字段名 `file`） |
 | `/predict_base64` | POST | body `{"image_b64": "..."}` |
@@ -181,6 +183,11 @@ curl -F "source=https://weibo.com/tv/show/1034:xxxx" -F "interval_ms=500" http:/
 | `/predict_video/{job_id}` | GET | 查询进度 / 结果（`queued`→`running`→`done`/`failed`） |
 | `/predict_video/{job_id}` | DELETE | 丢弃任务与产物（受限环境删不掉时返回 `purged=false` + `note`） |
 | `/stream` | POST | 启动实时会话：`file`（本地视频）或 `source`（摄像头索引 / rtsp:// / rtmp:// / http(s):// / **视频网页链接**，B站实测可用）；可选 `interval_ms`、`level`、`max_side`、`jpeg_quality`、`min_det`/`min_rec`（识别阈值，玩具车/小车牌调低）、`show_objects`（标注车辆/行人与疑似车牌）。网页链接经**站点适配器**（好看视频）或 yt-dlp 解析为媒体直链后拉流；DASH 分离流（B站/YouTube）选纯视频流，CDN 校验头拉不动时**自动下载兜底**（上限 200MB）。**B站两阶段风控口径相反**：解析要「不发 UA」才不被 412（机房/海外 IP + 浏览器 UA 必被拦），CDN 拉流又必须带浏览器 UA（空 UA 直接 403）——已在 `src/io/online.py` 拆成两套头，可用 `LPR_ONLINE_UA` 现场覆盖（默认 / 具体 UA / none）|
+| `/camera/session` | POST | **浏览器摄像头**：建会话（摄像头在用户那边，服务端够不着）。可选 `interval_ms`、`level`、`max_side`、`min_det`/`min_rec`、`show_objects` |
+| `/camera/{id}/frame` | POST | 推一帧 JPEG/PNG（multipart，字段名 `file`）→ 返回**要画的框**（车牌/车辆行人/疑似车牌）+ 统计 + 事件 |
+| `/camera/{id}` | GET | 摄像头会话状态（与 `/stream/{id}` 同一模型，前端复用同一套面板） |
+| `/camera/{id}` | DELETE | 结束摄像头会话（默认保留截图，`?purge=true` 连产物一起删） |
+| `/camera-media/{sid}/shots/...` | GET | 浏览器摄像头会话的车牌截图 |
 | `/stream/devices` | GET | 探测本机摄像头：**能打开且能读到一帧**才算可用，返回索引 / 后端 / 首帧耗时 |
 | `/stream/{id}.mjpg` | GET | **MJPEG 推流**，`<img src>` 直接播放带框画面 |
 | `/stream/{id}` | GET | 实时会话状态 / 统计 / 已识别车牌 |
@@ -194,7 +201,8 @@ curl -F "source=https://weibo.com/tv/show/1034:xxxx" -F "interval_ms=500" http:/
 | 场景 | 接口 | 原因 |
 |---|---|---|
 | 一段视频，要完整结果 | `POST /predict_video` | 处理要分钟级，同步 HTTP 必超时；异步 + 轮询才有真进度 |
-| 视频/摄像头，要边播边看 | `POST /stream` | 浏览器不能直连 RTSP，只有"服务端解码 → 编码 → 推流"这一条路 |
+| 视频/服务器摄像头，要边播边看 | `POST /stream` | 浏览器不能直连 RTSP，只有"服务端解码 → 编码 → 推流"这一条路 |
+| **用户本机的摄像头** | `POST /camera/session` + 逐帧推 | 摄像头在用户手里，服务端打不开它；画面本地播放、只推帧识别，带宽与延迟都远小于"推上去再推回来" |
 | 单图/多图 | `/predict`、`/predict_batch` | 秒级完成，同步返回最省事 |
 
 > ⚠️ `source` 允许 http(s) 地址意味着**服务端会去访问调用方给的 URL**。
@@ -207,6 +215,7 @@ curl -F "source=https://weibo.com/tv/show/1034:xxxx" -F "interval_ms=500" http:/
 "$V" tools/bench.py --img 图片.jpg --n 50 --concurrency 4
 "$V" tools/verify_video_api.py                        # 视频 HTTP 链路端到端（需服务已启动）
 "$V" tools/verify_stream_api.py                       # 实时流链路端到端（需服务已启动）
+"$V" tools/verify_camera_api.py                       # 浏览器摄像头链路端到端（模拟前端推帧，需服务已启动）
 "$V" tools/clean_jobs.py                              # 预览产物占用；--all --yes 才真删
 ```
 
@@ -226,10 +235,10 @@ plate-recognition/
 │  ├─ vision/        # warp 透视矫正 / color 颜色判定 / draw 分色画框 + 中文标签 + 车牌小图裁剪
 │  ├─ models/        # detector / lprnet / lpr_recognizer / hyperlpr_engine / onnx_export
 │  ├─ postprocess/   # rules 规则校验与省份纠错
-│  └─ pipeline/      # lpr_pipeline 单帧全链路 / video_pipeline 离线多帧 / stream 实时流会话
-├─ tools/            # 切分/训练/评测/压测/合成演示视频/两条端到端自检/产物清理
+│  └─ pipeline/      # lpr_pipeline 单帧全链路 / video_pipeline 离线多帧 / stream 实时流会话 / browser_camera 浏览器推帧会话
+├─ tools/            # 切分/训练/评测/压测/合成演示视频/三条端到端自检/产物清理
 ├─ service/          # FastAPI：app.py(路由) + schemas.py + jobs.py(视频任务) + streams.py(实时会话) + static/
-├─ tests/            # 单测 + 接口冒烟 + 引擎 + 视频任务 + 实时流
+├─ tests/            # 单测 + 接口冒烟 + 引擎 + 视频任务 + 实时流 + 浏览器摄像头 + 依赖守卫
 ├─ weights/          # .pt / .onnx 权重（不入 git）
 ├─ logs/             # 运行日志（不入 git）
 ├─ runs/             # 运行产物（annotated / jobs/<job_id>/ / streams/<sid>/）
@@ -297,6 +306,7 @@ python tools/train_lprnet.py --img-dir data/raw/crpd --device 0 --epochs 50
 | 实时画面里框的位置"慢半拍" | 框来自最近一次识别结果（中间帧沿用），车牌快速移动时会有滞后。提高识别频率可缓解 |
 | 识别速度慢（CPU） | ①本机实测瓶颈是 **ONNX 多会话线程池互相踩踏**（一次识别 500-600ms），已在 `hyperlpr_engine.py` 把 ORT 会话收敛为单线程（`LPR_ORT_THREADS` 可调），同视频实测 491→130ms；②级联权重未训练时连续 20 帧无结果会自动跳过级联（`cascade_skip_after`）；③识别核心（车牌检测+识别）本身只要 **8-12ms**，整帧含车辆归属 ~60-130ms；要 10ms 全链路需 GPU（TensorRT） |
 | 识别速度慢（CPU） | ①本机实测瓶颈是 **ONNX 多会话线程池互相踩踏**（一次识别 500-600ms），已在 `hyperlpr_engine.py` 把 ORT 会话收敛为单线程（`LPR_ORT_THREADS` 可调），同视频实测 491→130ms；②级联权重未训练时连续 20 帧无结果会自动跳过级联（`cascade_skip_after`）；③识别核心（车牌检测+识别）本身只要 **8-12ms**，整帧含车辆归属 ~60-130ms；要 10ms 全链路需 GPU（TensorRT） |
+| 云服务器上「摄像头」用不了 | 「浏览器摄像头」用的是**你本机**的摄像头（浏览器采集 + 推帧），服务端只识别不回画面；必须在 **https**（或 localhost）下打开页面并允许授权。服务器自己接了摄像头时，在「流地址」里填 `0`/`1` 走服务端拉流那条路 |
 | 摄像头/RTSP 一直没画面 | 先看 `/live` 页的「可用设备」——那里只列出**真能读到帧**的设备。摄像头被微信/钉钉/相机占用时能打开但读不到帧；RTSP 地址不通或需鉴权同理。核对完再点开始，30s 内无帧会判失败并给出原因 |
 | 摄像头首帧要等几秒 | 驱动唤醒慢属正常（本机实测 DSHOW 118ms，默认后端在服务进程内曾要 15s+）。已改为**索引源优先 DSHOW**，并把首次推理预热挪到启动阶段 |
 | 没有摄像头想做实时演示 | 用 `/live` 页的「用示例视频试试」，一键加载示例视频走同一条实时链路 |

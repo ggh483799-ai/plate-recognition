@@ -93,6 +93,14 @@
         display:flex; align-items:center; justify-content:center}
   .view img{display:block; width:100%; height:auto; max-height:64vh; object-fit:contain; background:#0F1317}
   .view__ph{padding:56px 20px; text-align:center; color:#8B95A1; font-size:13px; max-width:42ch}
+  /* 浏览器摄像头：video 自带画面，canvas 叠在上面画框。
+     video 用 width:100%/height:auto 让容器高度=画面比例，canvas 100%/100% 才能严丝合缝对齐
+     （用 object-fit:contain 会留黑边，坐标换算就得再算 letterbox，容易错）。 */
+  .camwrap{position:relative; width:100%; line-height:0}
+  .camwrap video{display:block; width:100%; height:auto; background:#0F1317}
+  .camwrap canvas{position:absolute; left:0; top:0; width:100%; height:100%; pointer-events:none}
+  .hint{font-size:12px; color:var(--ink-3); max-width:38ch; line-height:1.5}
+  .hint b{color:var(--ink-2); font-weight:500}
   .badge{
     position:absolute; left:12px; top:12px; display:none; align-items:center; gap:7px;
     font-size:11px; letter-spacing:.14em; color:#fff; background:rgba(0,0,0,.55);
@@ -147,7 +155,7 @@
   <div class="brand">
     <span class="brand__mark" aria-hidden="true"></span>
     <h1 class="brand__name">车牌识别 · 实时流</h1>
-    <span class="brand__sub">摄像头 / RTSP / 本地视频：边播边识别</span>
+    <span class="brand__sub">浏览器摄像头 / RTSP / 网页链接 / 本地视频：边播边识别</span>
   </div>
   <div class="nav">
     <a href="/upload">上传识别（图片 / 视频）</a>
@@ -170,22 +178,25 @@
         <div class="field">
           <span>视频来源</span>
           <div class="seg" id="srcSeg">
-            <button data-src="camera" class="is-active">本机摄像头</button>
+            <button data-src="camera" class="is-active">浏览器摄像头</button>
             <button data-src="rtsp">流地址 / 网页链接</button>
             <button data-src="file">本地视频</button>
           </div>
         </div>
 
         <div class="field" id="fCamera">
-          <span>可用设备</span>
-          <select id="cameraIdx" style="min-width:230px">
-            <option value="">探测中…</option>
+          <span>用你当前设备的摄像头</span>
+          <select id="camDevice" style="min-width:230px">
+            <option value="">默认摄像头</option>
           </select>
+          <span class="hint">调用<b>你正在使用的这台电脑 / 手机</b>的摄像头（浏览器会弹窗请求授权，需 https）。
+            画面帧会上传到服务器做识别，服务端<b>不回传原画面</b>。</span>
         </div>
 
         <div class="field" id="fRtsp" hidden>
           <span>流地址 / 视频网页链接</span>
           <input type="text" id="rtspUrl" placeholder="rtsp://… 或 https://weibo.com/tv/show/…" style="min-width:320px" />
+          <span class="hint">填 <code>0</code>/<code>1</code> 表示<b>服务器本机</b>的摄像头（服务器需接有设备）。</span>
         </div>
 
         <div class="field" id="fFile" hidden>
@@ -242,7 +253,7 @@
         <button class="btn btn--danger" id="stopBtn" disabled>停止</button>
         <button class="btn" id="demoBtn">用示例视频试试</button>
       </div>
-      <p class="note" id="note">正在探测本机摄像头…</p>
+      <p class="note" id="note">选「浏览器摄像头」可直接用你本机的摄像头：点「开始实时识别」后浏览器会请求摄像头授权。</p>
     </div>
   </section>
 
@@ -256,6 +267,10 @@
         <div class="badge" id="badge"><span class="badge__dot" aria-hidden="true"></span>LIVE</div>
         <div class="view__ph" id="viewPh">还没有画面。选好来源并点「开始实时识别」，这里会实时播放带车牌框的画面。</div>
         <img id="liveImg" alt="实时识别画面" hidden />
+        <div class="camwrap" id="camWrap" hidden>
+          <video id="camVideo" autoplay muted playsinline></video>
+          <canvas id="camCanvas"></canvas>
+        </div>
       </div>
     </section>
 
@@ -282,11 +297,21 @@
         <div class="empty">还没有识别到车牌。</div>
       </div>
       <details class="tips">
-        <summary>点「开始」后一直黑屏 / 报没有读到帧？</summary>
+        <summary>摄像头点「开始」后没画面 / 提示未授权？</summary>
         <ol>
-          <li><strong>没有可用摄像头</strong>：本页会用「能打开**且能读到一帧**」来判定设备是否可用，
-              只在设备列表里出现的就是可用的。一台都没有时会自动切到「本地视频」，
-              直接点「用示例视频试试」也能立刻看到效果。</li>
+          <li><strong>页面用的是「你的」摄像头</strong>：服务在云上，服务器那边没有摄像头，
+              所以「浏览器摄像头」是由<strong>你正在用的这台电脑/手机</strong>采集画面、
+              把帧推给服务器识别——浏览器会弹授权窗，必须点「允许」。</li>
+          <li><strong>必须 https 打开</strong>：浏览器只在 https 或 localhost 下允许用摄像头；
+              用 http 或 IP 直连会直接失败。</li>
+          <li><strong>被别的程序占用</strong>：会议 / 相机 / 直播软件会独占设备，关掉再试。</li>
+          <li><strong>仍然不行</strong>：改用「流地址 / 网页链接」或「本地视频」，点「用示例视频试试」可立刻看到效果。</li>
+          <li><strong>服务器上真接了摄像头</strong>：在「流地址」里填 <code>0</code>/<code>1</code>（服务器设备索引）。</li>
+        </ol>
+      </details>
+      <details class="tips">
+        <summary>用服务器摄像头 / RTSP 拉流时的常见问题</summary>
+        <ol>
           <li><strong>摄像头被别的程序占用</strong>：微信/钉钉/相机应用会独占设备，关掉再试。</li>
           <li><strong>首帧可能要等几秒</strong>：驱动唤醒慢属正常，超过 30s 仍无帧才会判定失败（看门狗）。</li>
           <li><strong>RTSP 地址不通或需鉴权</strong>：先用 VLC 确认这个地址能播，再填到这里。</li>
@@ -362,6 +387,19 @@
   var seenEvents = -1;
   var demoBlob = null;     // 「用示例视频试试」下载后的文件（无需用户手选）
 
+  // 浏览器摄像头状态：画面在本地 <video> 播放，帧按节奏推给服务端，识别框由 canvas 叠画
+  var cam = {
+    stream: null,          // getUserMedia 拿到的 MediaStream（停止时必须 close，否则摄像头指示灯常亮）
+    session: null,         // 服务端会话 {session_id, frame_url, status_url, media_base}
+    timer: null,           // 推帧定时器
+    inflight: false,       // 上一帧还没回来：不并发推（服务端也更省）
+    fails: 0,              // 连续上传失败次数（>=3 直接收尾并说明原因）
+    canvas: null, ctx: null, off: null, offctx: null,
+    frameW: 0, frameH: 0, boxes: []
+  };
+  var CAM_FAIL_LIMIT = 3;
+  var CAM_JPEG_QUALITY = 0.7;
+
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
@@ -392,7 +430,7 @@
     el("stopBtn").disabled = !running;
     el("demoBtn").disabled = running;
     tabBtns.forEach(function (b) { b.disabled = running; });
-    ["cameraIdx", "rtspUrl", "liveFile", "interval", "level", "maxSide", "sens", "showObjects"].forEach(function (id) {
+    ["camDevice", "rtspUrl", "liveFile", "interval", "level", "maxSide", "sens", "showObjects"].forEach(function (id) {
       el(id).disabled = running;
     });
   }
@@ -418,48 +456,56 @@
     }
   });
 
-  // ---------------- 设备探测 ----------------
-  // 只用"能打开**且能读到一帧**"的设备；一台都没有时自动切到本地视频，
-  // 免得用户一上来就点到一个只会黑屏的索引（真实事故：默认的摄像头 0 在本机取不到帧）。
-  async function probeDevices() {
-    var sel = el("cameraIdx");
+  // ---------------- 摄像头设备列表（浏览器侧） ----------------
+  // 注意：这里列的是**浏览者本机**的摄像头（enumerateDevices），不是服务器上的设备。
+  // 未授权前 label 为空，只能显示"摄像头 1/2"；授权后刷新一次就有名字了。
+  async function listCameras() {
+    var sel = el("camDevice");
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
     try {
-      var r = await fetch(API + "/stream/devices?count=4");
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      var d = (await r.json()).data || {};
-      var avail = d.available || [];
-      if (avail.length) {
-        sel.innerHTML = avail.map(function (i) {
-          var dev = (d.devices || []).filter(function (x) { return x.index === i; })[0] || {};
-          return '<option value="' + i + '">摄像头 ' + i + "（" + esc(dev.backend || "?") +
-            " · 首帧 " + Math.round(dev.first_frame_ms || 0) + "ms）</option>";
-        }).join("");
-        note(d.note || "", "ok");
+      var devices = await navigator.mediaDevices.enumerateDevices();
+      var cams = devices.filter(function (d) { return d.kind === "videoinput"; });
+      if (!cams.length) {
+        sel.innerHTML = '<option value="">未发现摄像头设备</option>';
         return;
       }
-      sel.innerHTML = '<option value="">未检测到可用摄像头</option>';
-      setSrcMode("file");
-      note(d.note || "未检测到可用摄像头，已切到「本地视频」。", "err");
-    } catch (e) {
-      sel.innerHTML = '<option value="0">摄像头 0（探测失败）</option>';
-      note("摄像头探测失败：服务是否在运行？也可改用「本地视频」。", "err");
+      var current = sel.value;
+      sel.innerHTML = cams.map(function (d, i) {
+        var name = d.label || ("摄像头 " + (i + 1));
+        return '<option value="' + esc(d.deviceId) + '">' + esc(name) + "</option>";
+      }).join("");
+      if (current) sel.value = current;
+    } catch (e) { /* 设备列表拿不到不影响使用：不选设备就用浏览器默认的那个 */ }
+  }
+
+  function cameraErrorText(err) {
+    var name = (err && err.name) || "";
+    if (name === "NotAllowedError" || name === "SecurityError") {
+      return "浏览器拒绝了摄像头授权。请点地址栏左侧的相机图标允许访问，然后重新开始。";
     }
+    if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+      return "这台设备上没有检测到摄像头。可改用「本地视频」或「用示例视频试试」。";
+    }
+    if (name === "NotReadableError" || name === "TrackStartError") {
+      return "摄像头被其它程序占用（会议/相机应用会独占）。关掉它们再试。";
+    }
+    if (!window.isSecureContext) {
+      return "浏览器只允许在 https 或 localhost 下使用摄像头；请用 https 打开本页。";
+    }
+    return "打开摄像头失败：" + ((err && err.message) || name || "未知原因");
   }
 
   // ---------------- 启动 / 停止 ----------------
 
   function buildForm() {
     var fd = new FormData();
-    if (srcMode === "camera") {
-      var idx = (el("cameraIdx").value || "").trim();
-      if (!/^\d+$/.test(idx)) { note("没有可用的摄像头索引，请改用「本地视频」或「示例视频」。", "err"); return null; }
-      fd.append("source", idx);
-    } else if (srcMode === "rtsp") {
+    if (srcMode === "rtsp") {
       var url = (el("rtspUrl").value || "").trim();
       var okStream = /^(rtsps?|rtmps?|udp|tcp):\/\//i.test(url);
       var okLink = /^https?:\/\//i.test(url);
-      if (!okStream && !okLink) {
-        note("要以 rtsp:// 开头，或粘贴视频网页链接（微博 / 抖音 / B站 / YouTube 等）。", "err");
+      var okIndex = /^\d+$/.test(url);          // 0/1 = 服务器本机的摄像头
+      if (!okStream && !okLink && !okIndex) {
+        note("要以 rtsp:// 开头、粘贴视频网页链接，或填服务器摄像头索引（0/1）。", "err");
         return null;
       }
       fd.append("source", url);
@@ -482,9 +528,10 @@
   }
 
   function describeSource() {
-    if (srcMode === "camera") return "摄像头 " + (el("cameraIdx").value || "?");
+    if (srcMode === "camera") return "浏览器摄像头（你本机）";
     if (srcMode === "rtsp") {
       var u = (el("rtspUrl").value || "").trim();
+      if (/^\d+$/.test(u)) return "服务器摄像头 " + u;
       return /^https?:\/\//i.test(u) ? "网页视频链接" : "RTSP 流";
     }
     var picked = el("liveFile").files && el("liveFile").files[0];
@@ -492,6 +539,7 @@
   }
 
   async function start() {
+    if (srcMode === "camera") return startBrowserCamera();   // 走浏览器采集通道，不经过 /stream
     var fd = buildForm();
     if (!fd) return;
     setBusy(true);
@@ -530,6 +578,7 @@
   }
 
   async function stop() {
+    if (camActive()) return stopBrowserCamera("已停止。识别结果与截图仍保留在上面。");
     if (!session) return;
     var sid = session.session_id;
     try { await fetch(API + "/stream/" + encodeURIComponent(sid), { method: "DELETE" }); }
@@ -539,6 +588,8 @@
 
   function endSession(text) {
     if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    if (camActive()) { stopLocalCamera(); el("camWrap").hidden = true; }
+    session = null;
     liveImg.removeAttribute("src");
     liveImg.hidden = true;
     viewPh.hidden = false;
@@ -549,6 +600,8 @@
   }
 
   function resetView() {
+    if (camActive()) { stopLocalCamera(); el("camWrap").hidden = true; }
+    session = null;
     liveImg.removeAttribute("src");
     liveImg.hidden = true;
     viewPh.hidden = false;
@@ -637,6 +690,223 @@
     }).join("");
   }
 
+  // ---------------- 浏览器摄像头：本地采集 → 定时推帧 → 叠画识别结果 ----------------
+  //
+  // 为什么不走 MJPEG：摄像头在**看网页的人**手里，服务端打不开它（部署到云上时
+  // 服务器那边根本没有设备）。所以画面在本地 <video> 原生播放（30fps 流畅），
+  // 只把帧按节奏推上去做识别，识别框由 canvas 叠画——上行几十 KB，下行一小段 JSON。
+
+  function camActive() { return !!(cam.session || cam.stream); }
+
+  function pushInterval() {
+    var v = parseInt(el("interval").value, 10);
+    if (!v || v < 120) v = 200;      // 「每帧尽力」在浏览器推帧场景没有意义，给一个下限
+    return v;
+  }
+
+  function cameraConstraints() {
+    var id = (el("camDevice").value || "").trim();
+    if (id) return { deviceId: { exact: id }, width: { ideal: 1280 }, height: { ideal: 720 } };
+    return { width: { ideal: 1280 }, height: { ideal: 720 } };
+  }
+
+  function ensureVideoReady(video, timeoutMs) {
+    return new Promise(function (resolve) {
+      if (video.videoWidth) return resolve(true);
+      var done = false;
+      var finish = function () { if (!done) { done = true; resolve(!!video.videoWidth); } };
+      video.addEventListener("loadedmetadata", finish, { once: true });
+      setTimeout(finish, timeoutMs);
+    });
+  }
+
+  async function startBrowserCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      note("当前浏览器不支持摄像头采集（需要 https 或 localhost 打开本页）。", "err");
+      return;
+    }
+    setBusy(true);
+    seenEvents = -1;
+    el("evList").innerHTML = '<div class="empty">正在等待摄像头授权…</div>';
+    note("正在请求摄像头权限：浏览器会弹窗，请点「允许」。");
+    try {
+      cam.stream = await navigator.mediaDevices.getUserMedia({ video: cameraConstraints(), audio: false });
+    } catch (err) {
+      note(cameraErrorText(err), "err");
+      el("evList").innerHTML = '<div class="empty">还没有识别到车牌。</div>';
+      setBusy(false);
+      return;
+    }
+
+    var video = el("camVideo");
+    video.srcObject = cam.stream;
+    try { await video.play(); } catch (e) { /* 静音自动播放，个别浏览器会拒绝，不影响取帧 */ }
+    await ensureVideoReady(video, 5000);
+    if (!video.videoWidth) {
+      note("摄像头已授权但没有画面（可能被其它程序占用）。", "err");
+      stopLocalCamera();
+      setBusy(false);
+      return;
+    }
+    listCameras();        // 授权后 label 才有值，刷新一次设备名
+
+    // 建服务端会话：服务端只做识别，画面留在本地
+    var fd = new FormData();
+    fd.append("interval_ms", el("interval").value);
+    fd.append("level", el("level").value);
+    fd.append("max_side", el("maxSide").value);
+    var sens = (el("sens").value || "0.5,0.6").split(",");
+    fd.append("min_det", sens[0]);
+    fd.append("min_rec", sens[1]);
+    fd.append("show_objects", el("showObjects").value);
+    try {
+      var res = await fetch(API + "/camera/session", { method: "POST", body: fd });
+      var body = await res.json().catch(function () { return null; });
+      if (!res.ok) {
+        var detail = body && (body.detail || body.msg);
+        note((typeof detail === "string" && detail) || ("服务返回 " + res.status), "err");
+        stopLocalCamera(); setBusy(false); return;
+      }
+      cam.session = body.data;
+      session = cam.session;                  // 状态轮询沿用同一套 poll/render
+    } catch (e) {
+      note("连不上识别服务，确认服务已启动后重试。", "err");
+      stopLocalCamera(); setBusy(false); return;
+    }
+
+    cam.canvas = el("camCanvas");
+    cam.ctx = cam.canvas.getContext("2d");
+    cam.off = document.createElement("canvas");
+    cam.offctx = cam.off.getContext("2d");
+    cam.fails = 0; cam.frameW = 0; cam.frameH = 0;
+
+    // 注意：这里不能调 resetView()——它会把刚拿到的摄像头流停掉（camActive() 为真）
+    el("camWrap").hidden = false;
+    liveImg.hidden = true;
+    viewPh.hidden = true;
+    badge.classList.add("badge--on");
+    el("srcMeta").textContent = describeSource();
+    el("evList").innerHTML = '<div class="empty">还没有识别到车牌。</div>';
+    note("实时识别中：画面在你本机播放，识别帧约 " + pushInterval() + " ms 上传一帧。", "ok");
+    pollTimer = setTimeout(poll, 800);
+    cam.timer = setTimeout(captureTick, 200);
+  }
+
+  function captureTick() {
+    if (!cam.session) return;                 // 已收尾
+    if (!cam.inflight) uploadFrame();
+    cam.timer = setTimeout(captureTick, pushInterval());
+  }
+
+  async function uploadFrame() {
+    var video = el("camVideo");
+    if (!video.videoWidth || !cam.offctx) return;
+    var maxSide = parseInt(el("maxSide").value, 10) || 640;
+    var vw = video.videoWidth, vh = video.videoHeight;
+    var scale = Math.min(1, maxSide / Math.max(vw, vh));
+    var w = Math.max(2, Math.round(vw * scale)), h = Math.max(2, Math.round(vh * scale));
+    if (cam.off.width !== w || cam.off.height !== h) { cam.off.width = w; cam.off.height = h; }
+    cam.offctx.drawImage(video, 0, 0, w, h);
+
+    cam.inflight = true;
+    try {
+      var blob = await new Promise(function (resolve) {
+        cam.off.toBlob(resolve, "image/jpeg", CAM_JPEG_QUALITY);
+      });
+      if (!blob) return;
+      var fd = new FormData();
+      fd.append("file", blob, "frame.jpg");
+      var res = await fetch(API + cam.session.frame_url, { method: "POST", body: fd });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      var d = (await res.json()).data;
+      cam.fails = 0;
+      drawBoxes(d.boxes, d.frame_size);
+      renderStats(d);
+      renderEvents(d);
+    } catch (e) {
+      cam.fails += 1;
+      if (cam.fails >= CAM_FAIL_LIMIT) {
+        stopBrowserCamera("连续 " + cam.fails + " 次上传失败，已停止（网络中断，或会话被服务端回收）。");
+      }
+    } finally {
+      cam.inflight = false;
+    }
+  }
+
+  var CAM_COLORS = { blue: "#3D7BEF", green: "#3FA648", yellow: "#E8B60F", white: "#E9EDF1", black: "#8B95A1" };
+
+  function drawBoxes(boxes, size) {
+    var c = cam.canvas;
+    if (!c || !size || size.length < 2 || !size[0]) return;
+    if (c.width !== size[0] || c.height !== size[1]) { c.width = size[0]; c.height = size[1]; }
+    var ctx = cam.ctx;
+    ctx.clearRect(0, 0, c.width, c.height);
+    var fontPx = Math.max(12, Math.round(c.width / 46));
+    ctx.font = "600 " + fontPx + "px 'Segoe UI','Microsoft YaHei',sans-serif";
+    ctx.textBaseline = "top";
+    (boxes || []).forEach(function (b) {
+      var box = b.bbox || [];
+      if (box.length < 4) return;
+      var x = box[0], y = box[1];
+      var w = Math.max(0, box[2] - box[0]), h = Math.max(0, box[3] - box[1]);
+      if (w < 2 || h < 2) return;
+      var color, label, weight;
+      if (b.kind === "plate") {
+        color = CAM_COLORS[b.plate_color] || CAM_COLORS.white;
+        label = (b.label || "") + "  " + Math.round((b.rec_score || 0) * 100) + "%";
+        weight = 3;
+      } else if (b.kind === "candidate") {
+        color = "#C9B489"; label = "疑似车牌 " + (b.label || ""); weight = 1.2;
+      } else {
+        color = b.kind === "person" ? "#C97B4A" : "#7E8A97";
+        label = (b.label || b.kind) + " " + (b.score || 0).toFixed(2);
+        weight = 1.5;
+      }
+      ctx.lineWidth = weight;
+      ctx.strokeStyle = color;
+      ctx.strokeRect(x, y, w, h);
+      if (!label) return;
+      var tw = ctx.measureText(label).width + 10, th = fontPx + 8;
+      var ty = (y - th < 0) ? y + 1 : y - th;
+      ctx.fillStyle = color;
+      ctx.fillRect(x, ty, tw, th);
+      ctx.fillStyle = (b.kind === "plate" && (b.plate_color === "white" || b.plate_color === "yellow"))
+        ? "#131A22" : "#FFFFFF";
+      ctx.fillText(label, x + 5, ty + 4);
+    });
+  }
+
+  function stopLocalCamera() {
+    if (cam.timer) { clearTimeout(cam.timer); cam.timer = null; }
+    if (cam.stream) {
+      cam.stream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) {} });
+      cam.stream = null;                      // 必须停轨：否则摄像头指示灯一直亮
+    }
+    var video = el("camVideo");
+    if (video) video.srcObject = null;
+    if (cam.ctx && cam.canvas) cam.ctx.clearRect(0, 0, cam.canvas.width, cam.canvas.height);
+    cam.inflight = false;
+    cam.session = null;
+  }
+
+  async function stopBrowserCamera(text) {
+    var sid = cam.session && cam.session.session_id;
+    stopLocalCamera();
+    session = null;
+    if (sid) {
+      try { await fetch(API + "/camera/" + encodeURIComponent(sid), { method: "DELETE" }); }
+      catch (e) { /* 服务端还有"多久没收到帧"的回收兜底，这里失败不影响本地收尾 */ }
+    }
+    if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    el("camWrap").hidden = true;
+    liveImg.hidden = true;
+    viewPh.hidden = false;
+    viewPh.textContent = "会话已结束。重新点「开始实时识别」可以再跑一路。";
+    badge.classList.remove("badge--on");
+    setBusy(false);
+    if (text) note(text);
+  }
+
   // ---------------- 示例视频（没有摄像头也能立刻看到效果）--------------
   el("demoBtn").addEventListener("click", async function () {
     note("正在取示例视频…");
@@ -676,7 +946,7 @@
     }
   })();
 
-  probeDevices();
+  listCameras();
 })();
 </script>
 </body>

@@ -3,7 +3,8 @@
 目录
 ----
     runs/jobs/<job_id>/        视频异步任务：input / annotated.mp4 / events.csv / shots/
-    runs/streams/<sid>/        实时会话：input / shots/
+    runs/streams/<sid>/        实时会话（服务端拉流）：input / shots/
+    runs/cameras/<sid>/        浏览器摄像头会话：shots/
 
 为什么单独给个脚本
 ------------------
@@ -33,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.common.logger import setup_logger  # noqa: E402
 from service.jobs import _remove_tree  # noqa: E402
 
-DEFAULT_ROOTS = ("runs/jobs", "runs/streams")
+DEFAULT_ROOTS = ("runs/jobs", "runs/streams", "runs/cameras")
 
 
 def _dir_size(path: Path) -> int:

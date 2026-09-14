@@ -230,3 +230,63 @@ class StreamStatusResponse(BaseModel):
     code: int = 0
     msg: str = "success"
     data: StreamStatusData
+
+
+# ============================================================
+# 浏览器摄像头（帧由前端推上来，服务端只识别）
+# ============================================================
+
+class CameraSessionStartData(BaseModel):
+    """创建浏览器摄像头会话后返回：前端据此开始推帧并轮询状态。"""
+
+    session_id: str
+    status: str = Field(..., description="starting / running / stopped / failed")
+    frame_url: str = Field("", description="推帧地址（相对路径，POST multipart，字段名 file）")
+    status_url: str = Field("", description="状态轮询地址（相对路径）")
+    media_base: str = Field("", description="事件截图目录（相对路径）")
+    interval_ms: int = Field(200, description="识别间隔(ms)：推帧不必快于此值")
+    max_side: int = Field(640, description="画面长边上限（服务端会再降采样一次）")
+    level: str = Field("low", description="检测档位 low/high")
+    max_frame_bytes: int = Field(..., description="单帧上传大小上限(字节)")
+    info: str = Field("", description="给用户看的说明（隐私/授权相关）")
+
+
+class CameraSessionStartResponse(BaseModel):
+    code: int = 0
+    msg: str = "success"
+    data: CameraSessionStartData
+
+
+class CameraBoxItem(BaseModel):
+    """画面上的一个框：kind 决定前端怎么画。
+
+    - `plate`     车牌（含识别结果）
+    - `vehicle`   车辆 / `person` 行人（细线，说明"检测到了什么"）
+    - `candidate` 疑似车牌但没过阈值（灰线 + 原因，回答"为什么没识别出"）
+    """
+
+    kind: str = Field(..., description="plate / vehicle / person / candidate")
+    label: str = Field("", description="展示文案（车牌号 / 类别 / 未通过原因）")
+    score: float = Field(0.0, description="置信度")
+    bbox: list[float] = Field(default_factory=list, description="[x1,y1,x2,y2]，帧像素坐标")
+    plate_color: str = Field("", description="仅车牌：blue/green/yellow/white/black")
+    rec_score: float = Field(0.0, description="仅车牌：识别置信度")
+
+
+class CameraFrameData(BaseModel):
+    """一帧的识别结果。坐标基于 `frame_size`，前端换算到显示尺寸后画框。"""
+
+    session_id: str
+    status: str = ""
+    reused: bool = Field(False, description="本帧沿用了上次结果（被节流/推理占用），非错误")
+    boxes: list[CameraBoxItem] = Field(default_factory=list, description="本次要画的全部框")
+    frame_size: list[int] = Field(default_factory=list, description="[宽, 高]，box 坐标所在空间")
+    stats: StreamStats = Field(default_factory=StreamStats)
+    events: list[VideoEventItem] = Field(default_factory=list, description="累积的车牌事件（去重后）")
+    media_base: str = Field("", description="截图目录相对地址")
+
+
+class CameraFrameResponse(BaseModel):
+    code: int = 0
+    msg: str = "success"
+    data: CameraFrameData
