@@ -180,7 +180,7 @@ curl -F "source=https://weibo.com/tv/show/1034:xxxx" -F "interval_ms=500" http:/
 | `/predict_video` | POST | multipart 上传视频（字段名 `file`，可选 `window_s`、`max_frames`）→ 立即返回 `job_id` |
 | `/predict_video/{job_id}` | GET | 查询进度 / 结果（`queued`→`running`→`done`/`failed`） |
 | `/predict_video/{job_id}` | DELETE | 丢弃任务与产物（受限环境删不掉时返回 `purged=false` + `note`） |
-| `/stream` | POST | 启动实时会话：`file`（本地视频）或 `source`（摄像头索引 / rtsp:// / rtmp:// / http(s):// / **视频网页链接**，B站实测可用）；可选 `interval_ms`、`level`、`max_side`、`jpeg_quality`、`min_det`/`min_rec`（识别阈值，玩具车/小车牌调低）、`show_objects`（标注车辆/行人与疑似车牌）。网页链接经**站点适配器**（好看视频）或 yt-dlp 解析为媒体直链后拉流；DASH 分离流（B站/YouTube）选纯视频流，CDN 校验头拉不动时**自动下载兜底**（上限 200MB）|
+| `/stream` | POST | 启动实时会话：`file`（本地视频）或 `source`（摄像头索引 / rtsp:// / rtmp:// / http(s):// / **视频网页链接**，B站实测可用）；可选 `interval_ms`、`level`、`max_side`、`jpeg_quality`、`min_det`/`min_rec`（识别阈值，玩具车/小车牌调低）、`show_objects`（标注车辆/行人与疑似车牌）。网页链接经**站点适配器**（好看视频）或 yt-dlp 解析为媒体直链后拉流；DASH 分离流（B站/YouTube）选纯视频流，CDN 校验头拉不动时**自动下载兜底**（上限 200MB）。**B站两阶段风控口径相反**：解析要「不发 UA」才不被 412（机房/海外 IP + 浏览器 UA 必被拦），CDN 拉流又必须带浏览器 UA（空 UA 直接 403）——已在 `src/io/online.py` 拆成两套头，可用 `LPR_ONLINE_UA` 现场覆盖（默认 / 具体 UA / none）|
 | `/stream/devices` | GET | 探测本机摄像头：**能打开且能读到一帧**才算可用，返回索引 / 后端 / 首帧耗时 |
 | `/stream/{id}.mjpg` | GET | **MJPEG 推流**，`<img src>` 直接播放带框画面 |
 | `/stream/{id}` | GET | 实时会话状态 / 统计 / 已识别车牌 |
@@ -314,6 +314,7 @@ python tools/train_lprnet.py --img-dir data/raw/crpd --device 0 --epochs 50
 | 输出视频帧数比预期少（日志还报「写出 N 帧」） | `cv2.VideoWriter` 收到尺寸不同的帧会静默丢弃（实测写 30 次只落 16 帧）。已修：`src/io/writer.py` 等比纠正 + `frames_resized` 计数 |
 | 视频里读不出车牌（单图能读出） | 多半是合成/缩放时把画面拉伸变形了。`tools/make_demo_video.py` 已改等比 letterbox |
 | 中文标签显示成 `????` | `cv2.putText` 不支持中文。已修：`src/vision/draw.py` 用 Pillow + 系统字体渲染，缺字体时降级 ASCII |
+| 网页链接报 412 / 403 | **两阶段风控口径相反**：①解析阶段（B站网页/API）机房与海外 IP 带浏览器 UA 会被 412，代码按站点改成**不发 UA**；②CDN 拉流阶段反过来必须带浏览器 UA（空 UA 403），媒体阶段单独用浏览器 UA + Referer。个别站点需登录 Cookie 时，可临时用 `LPR_ONLINE_UA=<你自己的UA>` 覆盖，或换回本机家宽/代理出口 |
 | 远景/航拍车流很多车没有车牌 | **像素极限，非故障**：车辆已检出（有 `car` 绿框）但车牌只有 25~50px，中文车牌可靠识别需 100px+ 近正视角。实测 720p/1080p + ROI 放大均无法读出（插值不产生信息）。换卡口/近景素材即可 |
 | 车牌截图内容错乱 | `cv2.VideoCapture` **复用帧缓冲**，切片是视图不是拷贝。已修：`crop_plate()` 内部 `copy()` |
 | 实时页点「开始」后一直黑屏 | 两个真实原因（都已修）：①**摄像头走了默认后端**——同一台机器同一设备，默认后端在服务进程内首次取帧要 15s+，显式 DSHOW 只要 118ms（现在索引源按 DSHOW→MSMF→默认 依次尝试）；②**首帧慢被误判成"播放落后"**，触发一次巨型追赶，实测一口气 grab 掉 444 帧（现在节奏原点取在首帧，且单次追赶上限约 2 秒的帧量） |
