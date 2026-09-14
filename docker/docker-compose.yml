@@ -14,7 +14,10 @@ services:
       - ../logs:/app/logs         # 日志挂载宿主机，容器重启不丢（计划书 §10.3）
       - ../runs:/app/runs         # 识别产物（截图/CSV）挂载，容器重建不丢
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      # 镜像基于 python:3.11-slim，**不含 curl** —— 原先用 curl 探活会让容器恒为 unhealthy
+      # （2026-09-14 实测：docker inspect FailingStreak=157，报 `exec: "curl": executable file not found`，
+      #  而服务本体完全正常、/health 外部返回 200）。改用镜像自带的 python 探活，不再依赖额外二进制。
+      test: ["CMD", "python", "-c", "import urllib.request as u, sys; sys.exit(0 if u.urlopen('http://127.0.0.1:8000/health', timeout=5).status == 200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
