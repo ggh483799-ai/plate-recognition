@@ -1326,3 +1326,185 @@ def test_resolve_source_skips_download_when_playable(monkeypatch, tmp_path):
     session.start()
     assert _drain(session)
     session.stop()
+
+
+# ============================================================
+# 站点风控：机房 IP + 浏览器 UA → 412（实测 B站），覆盖头 + 空 UA 兜底
+# ============================================================
+
+def _fake_ydl(monkeypatch, *, fail_times=0, info=None):
+    """构造一个可记录每次 http_headers 的假 YoutubeDL；fail_times 次调用后抛错。"""
+    calls = []
+    base = info or {"title": "t", "extractor_key": "BiliBili",
+                    "http_headers": {"User-Agent": "yt-dlp-chrome-UA"},
+                    "url": "https://upos.example.com/v.mp4"}
+
+    class FakeYDL:
+        def __init__(self, opts):
+            calls.append(dict(opts.get("http_headers") or {}))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download):
+            if len(calls) <= fail_times:
+                raise RuntimeError("HTTP Error 412: Precondition Failed")
+            return dict(base)
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYDL))
+    return calls
+
+
+def test_bilibili_headers_override_empty_ua(monkeypatch):
+    """B站：机房/海外 IP 带浏览器 UA 会被 412，必须按站点覆盖成「不发 UA」+ 带 Referer。"""
+    monkeypatch.delenv(online_mod.UA_ENV_VAR, raising=False)
+    calls = _fake_ydl(monkeypatch)
+    media = online_mod.resolve_online("https://www.bilibili.com/video/BV1VpZpYzE3k/")
+    assert len(calls) == 1                       # 站点覆盖一次成功，不该再多试
+    assert calls[0]["User-Agent"] == ""
+    assert calls[0]["Referer"] == "https://www.bilibili.com/"
+    # 覆盖值要延续到拉流/下载阶段（同身份），盖住 yt-dlp 回填的浏览器 UA
+    assert media.headers["User-Agent"] == ""
+    assert media.headers["Referer"] == "https://www.bilibili.com/"
+
+
+def test_412_falls_back_to_empty_ua(monkeypatch):
+    """通用兜底：其它站点遇到 412 时，第二次尝试改用空 UA（不改变站点覆盖策略）。"""
+    monkeypatch.delenv(online_mod.UA_ENV_VAR, raising=False)
+    calls = _fake_ydl(monkeypatch, fail_times=1)
+    media = online_mod.resolve_online("https://weibo.com/tv/show/1034:1")
+    assert len(calls) == 2
+    assert calls[0].get("User-Agent") != ""      # 第一次用默认（浏览器）UA
+    assert calls[1]["User-Agent"] == ""          # 第二次不发 UA
+    assert media.play_url.endswith(".mp4")
+
+
+def test_two_failures_still_raise_readable_error(monkeypatch):
+    monkeypatch.delenv(online_mod.UA_ENV_VAR, raising=False)
+    _fake_ydl(monkeypatch, fail_times=9)
+    with pytest.raises(RuntimeError, match="无法解析网页视频链接"):
+        online_mod.resolve_online("https://weibo.com/tv/show/1034:1")
+
+
+def test_env_can_force_default_or_empty_ua(monkeypatch):
+    """现场调优旋钮：LPR_ONLINE_UA 可强制指定 UA / default 回默认 / none 强制空。"""
+    # 强制指定：连 B站的空 UA 覆盖也被顶掉
+    monkeypatch.setenv(online_mod.UA_ENV_VAR, "curl/8.5.0")
+    calls = _fake_ydl(monkeypatch)
+    online_mod.resolve_online("https://www.bilibili.com/video/BV1VpZpYzE3k/")
+    assert calls[0]["User-Agent"] == "curl/8.5.0"
+
+    # default = 交回 yt-dlp 默认（不设 UA 键）
+    monkeypatch.setenv(online_mod.UA_ENV_VAR, "default")
+    calls = _fake_ydl(monkeypatch)
+    online_mod.resolve_online("https://www.bilibili.com/video/BV1VpZpYzE3k/")
+    assert "User-Agent" not in calls[0]
+    assert calls[0]["Referer"] == "https://www.bilibili.com/"
+
+    # none = 强制不发 UA
+    monkeypatch.setenv(online_mod.UA_ENV_VAR, "none")
+    calls = _fake_ydl(monkeypatch)
+    online_mod.resolve_online("https://www.bilibili.com/video/BV1VpZpYzE3k/")
+    assert calls[0]["User-Agent"] == ""
+
+
+def test_ffmpeg_options_drop_empty_ua():
+    """空 UA 不能变成 `user_agent;` 这种空值条目（会污染 capture options 解析）。"""
+    opts = online_mod.ffmpeg_capture_options(
+        {"User-Agent": "", "Referer": "https://www.bilibili.com/"})
+    assert "user_agent" not in opts
+    assert "referer;https://www.bilibili.com/" in opts
+
+
+# ============================================================
+# 站点风控：机房 IP + 浏览器 UA → 412（实测 B站），覆盖头 + 空 UA 兜底
+# ============================================================
+
+def _fake_ydl(monkeypatch, *, fail_times=0, info=None):
+    """构造一个可记录每次 http_headers 的假 YoutubeDL；fail_times 次调用后抛错。"""
+    calls = []
+    base = info or {"title": "t", "extractor_key": "BiliBili",
+                    "http_headers": {"User-Agent": "yt-dlp-chrome-UA"},
+                    "url": "https://upos.example.com/v.mp4"}
+
+    class FakeYDL:
+        def __init__(self, opts):
+            calls.append(dict(opts.get("http_headers") or {}))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download):
+            if len(calls) <= fail_times:
+                raise RuntimeError("HTTP Error 412: Precondition Failed")
+            return dict(base)
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYDL))
+    return calls
+
+
+def test_bilibili_headers_override_empty_ua(monkeypatch):
+    """B站：机房/海外 IP 带浏览器 UA 会被 412，必须按站点覆盖成「不发 UA」+ 带 Referer。"""
+    monkeypatch.delenv(online_mod.UA_ENV_VAR, raising=False)
+    calls = _fake_ydl(monkeypatch)
+    media = online_mod.resolve_online("https://www.bilibili.com/video/BV1VpZpYzE3k/")
+    assert len(calls) == 1                       # 站点覆盖一次成功，不该再多试
+    assert calls[0]["User-Agent"] == ""
+    assert calls[0]["Referer"] == "https://www.bilibili.com/"
+    # 覆盖值要延续到拉流/下载阶段（同身份），盖住 yt-dlp 回填的浏览器 UA
+    assert media.headers["User-Agent"] == ""
+    assert media.headers["Referer"] == "https://www.bilibili.com/"
+
+
+def test_412_falls_back_to_empty_ua(monkeypatch):
+    """通用兜底：其它站点遇到 412 时，第二次尝试改用空 UA（不改变站点覆盖策略）。"""
+    monkeypatch.delenv(online_mod.UA_ENV_VAR, raising=False)
+    calls = _fake_ydl(monkeypatch, fail_times=1)
+    media = online_mod.resolve_online("https://weibo.com/tv/show/1034:1")
+    assert len(calls) == 2
+    assert calls[0].get("User-Agent") != ""      # 第一次用默认（浏览器）UA
+    assert calls[1]["User-Agent"] == ""          # 第二次不发 UA
+    assert media.play_url.endswith(".mp4")
+
+
+def test_two_failures_still_raise_readable_error(monkeypatch):
+    monkeypatch.delenv(online_mod.UA_ENV_VAR, raising=False)
+    _fake_ydl(monkeypatch, fail_times=9)
+    with pytest.raises(RuntimeError, match="无法解析网页视频链接"):
+        online_mod.resolve_online("https://weibo.com/tv/show/1034:1")
+
+
+def test_env_can_force_default_or_empty_ua(monkeypatch):
+    """现场调优旋钮：LPR_ONLINE_UA 可强制指定 UA / default 回默认 / none 强制空。"""
+    # 强制指定：连 B站的空 UA 覆盖也被顶掉
+    monkeypatch.setenv(online_mod.UA_ENV_VAR, "curl/8.5.0")
+    calls = _fake_ydl(monkeypatch)
+    online_mod.resolve_online("https://www.bilibili.com/video/BV1VpZpYzE3k/")
+    assert calls[0]["User-Agent"] == "curl/8.5.0"
+
+    # default = 交回 yt-dlp 默认（不设 UA 键）
+    monkeypatch.setenv(online_mod.UA_ENV_VAR, "default")
+    calls = _fake_ydl(monkeypatch)
+    online_mod.resolve_online("https://www.bilibili.com/video/BV1VpZpYzE3k/")
+    assert "User-Agent" not in calls[0]
+    assert calls[0]["Referer"] == "https://www.bilibili.com/"
+
+    # none = 强制不发 UA
+    monkeypatch.setenv(online_mod.UA_ENV_VAR, "none")
+    calls = _fake_ydl(monkeypatch)
+    online_mod.resolve_online("https://www.bilibili.com/video/BV1VpZpYzE3k/")
+    assert calls[0]["User-Agent"] == ""
+
+
+def test_ffmpeg_options_drop_empty_ua():
+    """空 UA 不能变成 `user_agent;` 这种空值条目（会污染 capture options 解析）。"""
+    opts = online_mod.ffmpeg_capture_options(
+        {"User-Agent": "", "Referer": "https://www.bilibili.com/"})
+    assert "user_agent" not in opts
+    assert "referer;https://www.bilibili.com/" in opts

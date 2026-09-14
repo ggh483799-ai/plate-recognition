@@ -35,6 +35,42 @@ _FFMPEG_HEADER_KEYS = {
     "cookie": "cookie",
 }
 
+# 站点请求头覆盖：有些站点按「出口 IP 类型 + UA 组合」做风控，机房/海外 IP 带浏览器 UA 直接被拦。
+# 实测（2026-09-14，腾讯云新加坡出口 43.134.102.119 请求 B站）：
+#   默认 Chrome UA      → HTTP 412（风控页），API 也返回风控 HTML
+#   显式 curl/8.5.0 UA  → 页面 200 但 playurl「No video formats found」
+#   **空 UA**           → 页面 200 + API 正常 JSON + yt-dlp 成功拿到 720p 纯视频流
+# 而同一份代码在家宽（本机）用默认 UA 是正常的 → 所以按站点精准覆盖，而不是全局改 UA。
+SITE_HEADER_OVERRIDES: dict[str, dict[str, str]] = {
+    "bilibili.com": {"User-Agent": "", "Referer": "https://www.bilibili.com/"},
+}
+
+# 环境变量强制覆盖 UA（留一个现场调优的旋钮：某些站点要求特定 UA / 需要配合 Cookie）
+UA_ENV_VAR = "LPR_ONLINE_UA"
+
+
+def _header_overrides(url: str) -> dict[str, str]:
+    """按站点返回需要强制使用的请求头；`LPR_ONLINE_UA` 可覆盖 UA。"""
+    import os
+
+    host = _host_of(url)
+    headers: dict[str, str] = {}
+    for suffix, values in SITE_HEADER_OVERRIDES.items():
+        if host == suffix or host.endswith("." + suffix):
+            headers.update(values)
+            break
+    forced = os.environ.get(UA_ENV_VAR)
+    if forced is not None:
+        # default/auto = 交回 yt-dlp 默认的浏览器 UA；none/empty = 强制不发 UA
+        forced = forced.strip()
+        if forced.lower() in ("default", "auto"):
+            headers.pop("User-Agent", None)
+        elif forced.lower() in ("none", "empty"):
+            headers["User-Agent"] = ""
+        else:
+            headers["User-Agent"] = forced
+    return headers
+
 
 @dataclass
 class OnlineMedia:
@@ -196,11 +232,34 @@ def resolve_online(url: str, max_height: int = 720, timeout_s: float = 25.0) -> 
         "format": fmt,
         "socket_timeout": int(max(5, timeout_s)),
     }
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-    except Exception as exc:  # yt-dlp 的 DownloadError 类型不稳定，统一按 RuntimeError 出
-        raise RuntimeError(f"无法解析网页视频链接（可能需要登录 / 已删除 / 地区限制）: {exc}") from exc
+    overrides = _header_overrides(url)
+
+    # 候选头序列：先按站点覆盖（可能为空 = 用 yt-dlp 默认 UA）；若仍失败，再试"不发 UA"。
+    # 依据：机房/海外 IP 上，风控更认「IP + UA 组合」而非单纯 IP——B站实测空 UA 直通。
+    candidates: list[dict[str, str]] = [dict(overrides)]
+    if overrides.get("User-Agent") != "":
+        candidates.append({**overrides, "User-Agent": ""})
+
+    info = None
+    for idx, headers in enumerate(candidates):
+        label = "站点覆盖" if idx == 0 else "空 UA 兜底"
+        try:
+            with yt_dlp.YoutubeDL({**opts, "http_headers": headers}) as ydl:
+                info = ydl.extract_info(url, download=False)
+        except Exception as exc:  # yt-dlp 的 DownloadError 类型不稳定，统一按 RuntimeError 出
+            if idx + 1 < len(candidates):
+                log.warning("[Online] 解析失败（%s），改用%s重试: %s",
+                            label, "空 UA" if idx == 0 else "站点覆盖", str(exc)[:100])
+                continue
+            raise RuntimeError(
+                f"无法解析网页视频链接（可能需要登录 / 已删除 / 地区限制）: {exc}") from exc
+        if info:
+            log.info("[Online] 解析成功（%s）: %s", label, url[:60])
+            break
+        if idx + 1 < len(candidates):
+            log.warning("[Online] 解析结果为空（%s），改用空 UA 重试", label)
+            continue
+        raise RuntimeError("网页视频链接解析结果为空")
 
     if info is None:
         raise RuntimeError("网页视频链接解析结果为空")
@@ -225,9 +284,14 @@ def resolve_online(url: str, max_height: int = 720, timeout_s: float = 25.0) -> 
         play_url = best["url"]
         info.setdefault("http_headers", best.get("http_headers") or {})
 
+    # 站点覆盖（如空 UA）要盖住 yt-dlp 回填的浏览器 UA：
+    # 拉流（ffmpeg 头透传）与"下载兜底"必须与解析阶段同身份，否则 CDN/风控可能只在最后一步拦你。
+    headers = dict(info.get("http_headers") or {})
+    headers.update(overrides)
+
     media = OnlineMedia(
         play_url=play_url,
-        headers=dict(info.get("http_headers") or {}),
+        headers=headers,
         title=str(info.get("title") or ""),
         extractor=str(info.get("extractor_key") or ""),
     )
