@@ -394,6 +394,7 @@
     timer: null,           // 推帧定时器
     inflight: false,       // 上一帧还没回来：不并发推（服务端也更省）
     fails: 0,              // 连续上传失败次数（>=3 直接收尾并说明原因）
+    pending: false,        // 正在申请授权/建会话：用户此刻点「停止」要能取消掉
     canvas: null, ctx: null, off: null, offctx: null,
     frameW: 0, frameH: 0, boxes: []
   };
@@ -578,6 +579,7 @@
   }
 
   async function stop() {
+    if (cam.pending) return cancelPendingCamera();   // 还在申请授权/建会话，先取消
     if (camActive()) return stopBrowserCamera("已停止。识别结果与截图仍保留在上面。");
     if (!session) return;
     var sid = session.session_id;
@@ -698,6 +700,23 @@
 
   function camActive() { return !!(cam.session || cam.stream); }
 
+  // 授权弹窗 / 建会话期间用户点了「停止」：把已经拿到的资源收拾干净（否则摄像头会"自己亮起来"）
+  function cancelPendingCamera() {
+    cam.pending = false;
+    var sid = cam.session && cam.session.session_id;
+    stopLocalCamera();
+    session = null;
+    if (sid) {
+      fetch(API + "/camera/" + encodeURIComponent(sid), { method: "DELETE" }).catch(function () {});
+    }
+    el("camWrap").hidden = true;
+    viewPh.hidden = false;
+    viewPh.textContent = "还没有画面。选好来源并点「开始实时识别」，这里会实时播放带车牌框的画面。";
+    badge.classList.remove("badge--on");
+    setBusy(false);
+    note("已取消。");
+  }
+
   function pushInterval() {
     var v = parseInt(el("interval").value, 10);
     if (!v || v < 120) v = 200;      // 「每帧尽力」在浏览器推帧场景没有意义，给一个下限
@@ -726,6 +745,7 @@
       return;
     }
     setBusy(true);
+    cam.pending = true;
     seenEvents = -1;
     el("evList").innerHTML = '<div class="empty">正在等待摄像头授权…</div>';
     note("正在请求摄像头权限：浏览器会弹窗，请点「允许」。");
@@ -734,9 +754,11 @@
     } catch (err) {
       note(cameraErrorText(err), "err");
       el("evList").innerHTML = '<div class="empty">还没有识别到车牌。</div>';
+      cam.pending = false;
       setBusy(false);
       return;
     }
+    if (!cam.pending) return cancelPendingCamera();   // 授权期间用户点了「停止」
 
     var video = el("camVideo");
     video.srcObject = cam.stream;
@@ -773,7 +795,9 @@
       note("连不上识别服务，确认服务已启动后重试。", "err");
       stopLocalCamera(); setBusy(false); return;
     }
+    if (!cam.pending) return cancelPendingCamera();   // 建会话期间用户点了「停止」
 
+    cam.pending = false;
     cam.canvas = el("camCanvas");
     cam.ctx = cam.canvas.getContext("2d");
     cam.off = document.createElement("canvas");
