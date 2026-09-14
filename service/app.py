@@ -193,28 +193,37 @@ app.mount("/media", StaticFiles(directory=JOBS_DIR), name="media")
 app.mount("/stream-media", StaticFiles(directory=STREAMS_DIR), name="stream_media")
 
 
-@app.get("/", include_in_schema=False)
+def _html_page(filename: str) -> FileResponse:
+    """返回页面文件，并显式禁用缓存。
+
+    为什么必须 no-store：FileResponse 默认只带 ETag/Last-Modified，**没有 Cache-Control**，
+    浏览器于是按"启发式缓存"规则（约 last-modified 之后时长的 10%）直接吃本地副本、
+    不做校验——实测改了首页（/ 从上传页换成实时页）之后，用户浏览器仍显示旧页面，
+    而服务器返回的已是新页面。页面是入口，必须每次都拿最新的。
+    同时放开 HEAD：健康探测/监控常用 HEAD，只注册 GET 会返回 405。
+    """
+    page = STATIC_DIR / filename
+    if not page.is_file():
+        raise HTTPException(status_code=404, detail=f"页面缺失: service/static/{filename}")
+    return FileResponse(page, headers={"Cache-Control": "no-store, must-revalidate"})
+
+
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
 def live_page() -> FileResponse:
     """首页 = 实时流监控页（摄像头 / RTSP / 网页链接，边播边识别）。"""
-    page = STATIC_DIR / "live.html"
-    if not page.is_file():
-        raise HTTPException(status_code=404, detail="实时页缺失: service/static/live.html")
-    return FileResponse(page)
+    return _html_page("live.html")
 
 
-@app.get("/live", include_in_schema=False)
+@app.api_route("/live", methods=["GET", "HEAD"], include_in_schema=False)
 def live_page_alias() -> FileResponse:
     """兼容旧链接：/live 与首页同一个页面。"""
-    return live_page()
+    return _html_page("live.html")
 
 
-@app.get("/upload", include_in_schema=False)
+@app.api_route("/upload", methods=["GET", "HEAD"], include_in_schema=False)
 def upload_page() -> FileResponse:
     """上传识别页（图片单张/批量 / 视频异步任务）。"""
-    page = STATIC_DIR / "index.html"
-    if not page.is_file():
-        raise HTTPException(status_code=404, detail="识别页面缺失: service/static/index.html")
-    return FileResponse(page)
+    return _html_page("index.html")
 
 
 @app.get("/health", response_model=HealthResponse)

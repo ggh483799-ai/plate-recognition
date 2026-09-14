@@ -126,3 +126,17 @@ def test_static_demo_image_served():
     r = client.get("/static/demo.jpg")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("image/")
+
+
+def test_pages_are_not_cached():
+    """页面必须显式 no-store：否则浏览器启发式缓存会让路由变更"看起来没生效"（真实踩过）。"""
+    for path in ("/", "/live", "/upload"):
+        r = client.get(path)
+        assert "no-store" in r.headers.get("cache-control", ""), path
+
+
+def test_pages_allow_head():
+    """HEAD 要能用（健康探测/监控常用），只注册 GET 会 405。"""
+    for path in ("/", "/live", "/upload"):
+        r = client.head(path)
+        assert r.status_code == 200, path
