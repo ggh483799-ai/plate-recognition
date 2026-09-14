@@ -194,20 +194,26 @@ app.mount("/stream-media", StaticFiles(directory=STREAMS_DIR), name="stream_medi
 
 
 @app.get("/", include_in_schema=False)
-def index() -> FileResponse:
-    """上传识别页（图片 / 视频）。"""
-    page = STATIC_DIR / "index.html"
+def live_page() -> FileResponse:
+    """首页 = 实时流监控页（摄像头 / RTSP / 网页链接，边播边识别）。"""
+    page = STATIC_DIR / "live.html"
     if not page.is_file():
-        raise HTTPException(status_code=404, detail="识别页面缺失: service/static/index.html")
+        raise HTTPException(status_code=404, detail="实时页缺失: service/static/live.html")
     return FileResponse(page)
 
 
 @app.get("/live", include_in_schema=False)
-def live_page() -> FileResponse:
-    """实时流识别页（摄像头 / RTSP / 本地视频，边播边识别）。"""
-    page = STATIC_DIR / "live.html"
+def live_page_alias() -> FileResponse:
+    """兼容旧链接：/live 与首页同一个页面。"""
+    return live_page()
+
+
+@app.get("/upload", include_in_schema=False)
+def upload_page() -> FileResponse:
+    """上传识别页（图片单张/批量 / 视频异步任务）。"""
+    page = STATIC_DIR / "index.html"
     if not page.is_file():
-        raise HTTPException(status_code=404, detail="实时页缺失: service/static/live.html")
+        raise HTTPException(status_code=404, detail="识别页面缺失: service/static/index.html")
     return FileResponse(page)
 
 

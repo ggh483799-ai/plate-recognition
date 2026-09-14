@@ -93,12 +93,23 @@ def test_predict_serializes_plates_when_ready(monkeypatch):
     assert item["cost_ms"] == 12.5
 
 
-def test_index_page_served():
-    """根路径应返回上传识别页。"""
+def test_live_page_is_homepage():
+    """根路径 = 实时流监控页（首页），/live 是它的兼容别名。"""
     r = client.get("/")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
-    assert "识别结果" in r.text
+    assert "开始实时识别" in r.text          # live.html 独有文案
+    assert client.get("/live").text == r.text
+
+
+def test_upload_page_moved_to_upload():
+    """/upload = 上传识别页（图片/视频）。"""
+    r = client.get("/upload")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert "predict_batch" in r.text          # index.html 独有文案
+    # 页面互链要指回新首页（不留下指向旧首页的死链）
+    assert 'href="/"' in r.text
 
 
 def test_live_page_served():
