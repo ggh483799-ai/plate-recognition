@@ -7,6 +7,7 @@ __pycache__/
 # 运行产物与日志（服务器上由 volume 承载，不进 git）
 runs/
 logs/
+.hyperlpr3/            # 兜底引擎模型缓存（容器挂载用，不进 git）
 
 # 密钥与本地配置
 .env

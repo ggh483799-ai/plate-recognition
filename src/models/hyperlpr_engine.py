@@ -173,20 +173,52 @@ def _models_ready(root: Path, version: str) -> bool:
     return all((onnx_dir / name).is_file() for name in _REQUIRED_ONNX)
 
 
-def _download_and_extract(online_url: str, version: str, target: Path) -> None:
-    """下载模型 zip 并解压。临时 zip 的清理是「尽力而为」，失败不影响使用。"""
+def _download_and_extract(online_url: str, version: str, target: Path,
+                          attempts: int = 3, timeout_s: float = 600.0) -> None:
+    """下载模型 zip 并解压。临时 zip 的清理是「尽力而为」，失败不影响使用。
+
+    为什么要重试 + 打进度：模型站（hyperlpr.tunm.top）从境外访问实测只有 ~40KB/s，
+    12MB 要跑好几分钟。**静默几分钟**会让人以为进程卡死（真实事故：线上首次部署因
+    这一段超过健康检查窗口而 CI 失败，日志里只有"下载模型: …"一行，看不出是在动）。
+    所以：① 每 2MB 打一条进度日志；② 断流/超时自动重试（每次从零开始，zip 会被覆盖写）。
+    """
     import requests
 
     target.mkdir(parents=True, exist_ok=True)
     url = f"{online_url}{version}.zip"
     zip_path = target / f"{version}.zip"
-    log.info("[HyperLpr] 下载模型: %s", url)
 
-    with requests.get(url, stream=True, timeout=180) as resp:
-        resp.raise_for_status()
-        with open(zip_path, "wb") as fh:
-            for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                fh.write(chunk)
+    last_error: Exception | None = None
+    for attempt in range(1, max(1, attempts) + 1):
+        log.info("[HyperLpr] 下载模型(第 %d/%d 次): %s", attempt, attempts, url)
+        try:
+            done = 0
+            next_log = 2 * 1024 * 1024
+            t0 = time.time()
+            with requests.get(url, stream=True, timeout=(30, timeout_s)) as resp:
+                resp.raise_for_status()
+                total = int(resp.headers.get("content-length") or 0)
+                with open(zip_path, "wb") as fh:
+                    for chunk in resp.iter_content(chunk_size=256 * 1024):
+                        fh.write(chunk)
+                        done += len(chunk)
+                        if done >= next_log:
+                            speed = done / max(1e-6, time.time() - t0) / 1024
+                            log.info("[HyperLpr] 已下载 %.1f MB%s（%.0f KB/s）",
+                                     done / 1048576,
+                                     f" / {total / 1048576:.1f} MB" if total else "",
+                                     speed)
+                            next_log += 2 * 1024 * 1024
+            log.info("[HyperLpr] 下载完成 %.1f MB，用时 %.0fs",
+                     done / 1048576, time.time() - t0)
+            break
+        except Exception as exc:  # noqa: BLE001 —— 慢链接/断流都要能重试
+            last_error = exc
+            log.warning("[HyperLpr] 下载失败（第 %d/%d 次）: %s", attempt, attempts, exc)
+            if attempt >= attempts:
+                raise
+    else:  # pragma: no cover —— 循环必然 break 或 raise
+        raise RuntimeError(f"模型下载失败: {last_error}")
 
     with zipfile.ZipFile(zip_path) as zf:
         zf.extractall(target)

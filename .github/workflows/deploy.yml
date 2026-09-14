@@ -49,7 +49,9 @@ jobs:
             # 固定 sleep 15 会过早误判——这里就绪重试最多 3 分钟。
             # 注意：set -e 下 curl 网络失败（exit 56）会直接杀脚本，必须 || true 兜住
             code="000"
-            for i in $(seq 1 18); do
+            # 36 轮 × 10s = 6 分钟：首次部署要下载兜底引擎模型（12MB，境外模型站约 40KB/s），
+            # 挂 volume 后只有第一次会慢；之后的部署都是秒起。
+            for i in $(seq 1 36); do
               code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
                      "http://127.0.0.1:8030/health" || true)
               if [ -z "$code" ]; then code="000"; fi

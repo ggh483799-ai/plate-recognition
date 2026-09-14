@@ -13,6 +13,10 @@ services:
       - ../weights:/app/weights   # 权重持久化
       - ../logs:/app/logs         # 日志挂载宿主机，容器重启不丢（计划书 §10.3）
       - ../runs:/app/runs         # 识别产物（截图/CSV）挂载，容器重建不丢
+      - ../.hyperlpr3:/root/.hyperlpr3   # 兜底引擎模型（约 12MB）：持久化，
+                                  # 否则**每次容器重建都要重新下载**（模型站境外只有 ~40KB/s，
+                                  # 实测导致首次部署超过健康检查窗口 → CI 红）
+
     healthcheck:
       # 镜像基于 python:3.11-slim，**不含 curl** —— 原先用 curl 探活会让容器恒为 unhealthy
       # （2026-09-14 实测：docker inspect FailingStreak=157，报 `exec: "curl": executable file not found`，
@@ -21,5 +25,6 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      # 首次启动可能要下载兜底引擎模型（挂 volume 后仅第一次），宽限给足
+      start_period: 300s
     restart: unless-stopped
