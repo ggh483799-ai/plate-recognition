@@ -74,6 +74,11 @@ V="C:/Users/Administrator/.workbuddy/binaries/python/envs/default/Scripts/python
   上传进度 → 服务端处理显示**真实帧进度与预计剩余** → 完成后给出标注视频回放、
   每个车牌事件的截图/首现时间/命中帧数/置信度、事件 CSV 导出。
 - 两种模式都有「用示例图/示例视频试试」，走的是与手动上传完全相同的链路。
+- **内置示例素材**（都在 `service/static/`，页面通过 `/static/…` 取用）：
+  - `demo.jpg`：样车图，可读出 `粤A3333G`；
+  - `demo.mp4`：**真实路面卡口视频**（640×362 @24fps，66 秒，2014 年街景），
+    画面稳定可读 `晋AZ9871`，另有 `晋AEQ476`、`川A761N7`、`晋AEN251` 等多辆车依次经过——
+    比合成素材更能反映真实识别效果（抽样 32 帧有 22 帧读出车牌）。
 
 ### 实时流识别页（浏览器摄像头 / RTSP / 网页视频链接 / 边播边识别）
 
@@ -160,7 +165,7 @@ curl -F "source=https://weibo.com/tv/show/1034:xxxx" -F "interval_ms=500" http:/
 事件在**定稿**（离场或流结束）后才落盘，因此 `hits` 与置信度都是完整值——
 上报的是**识别置信度最高那一帧**，不是最后一帧（实测首帧 0.9353 → 最佳帧 0.9998）。
 
-无摄像头时可用 `tools/make_demo_video.py` 由一张图合成运动视频验证链路：
+无摄像头时可用 `tools/make_demo_video.py` 由一张图合成运动视频验证链路（仓库自带真实样例 `service/static/demo.mp4`，合成器用于造**可控**素材，例如固定车牌、固定帧数）：
 
 ```bash
 "$V" tools/make_demo_video.py --img data/field/test_car.png --out runs/video_e2e/demo.mp4 --seconds 3 --fps 10
