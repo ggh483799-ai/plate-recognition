@@ -15,6 +15,7 @@ numpy>=1.26
 # 会因缺 libxcb 直接 ImportError，2026-09-14 真实踩过）。本项目不用 cv2.imshow，headless 足够
 opencv-python-headless>=4.8
 matplotlib>=3.7
+pillow>=10.0            # src/vision/draw.py 渲染中文标签（cv2.putText 不支持中文）
 # albumentations>=1.3   # 可选：额外数据增强。注意它依赖 opencv-python-headless，
 #                       # 与 opencv-python 冲突（都提供 cv2）。ultralytics 已内置
 #                       # mosaic/perspective/hsv 等增强（计划书 §4.4），非必需。
@@ -29,6 +30,13 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 pydantic>=2.0
 python-multipart>=0.0.9
+
+# ---- 网页视频链接解析（实时流的 source 支持微博 / B站 / 抖音等网页链接）----
+# 用法：src/io/online.py 先解析出媒体直链，再交给 cv2 拉流；CDN 校验头拉不动时 download_online 下载兜底。
+# ⚠️ 这是**运行时必需**依赖，不是可选项——漏了会直接报「服务端缺少 yt-dlp，暂不支持该网页视频链接」
+#   （2026-09-14 真实事故：只在本机 venv 装了、没写进清单，容器里没有 → 线上功能不可用）
+yt-dlp>=2024.8.6        # 站点提取器随上游更新，B站/微博等反爬变化时升级它（pip install -U yt-dlp）
+requests>=2.31          # 解析器取 Cookie / 下载兜底直连（此前靠传递依赖，属未声明使用）
 
 # ---- 工程 / 测试 / 日志 ----
 pytest>=8.0
