@@ -22,9 +22,10 @@ def main() -> int:
         return 1
 
     b64 = base64.b64encode(SAMPLE.read_bytes()).decode()
+    payload = ('{"image_b64": "%s"}' % b64).encode()
     req = urllib.request.Request(
         API,
-        data=b'{"image_b64": "%s"}' % b64,
+        data=payload,
         headers={"Content-Type": "application/json"},
     )
     try:
