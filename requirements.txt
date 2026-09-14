@@ -34,6 +34,7 @@ python-multipart>=0.0.9
 pytest>=8.0
 httpx>=0.27            # FastAPI TestClient 依赖
 loguru>=0.7
+tqdm>=4.66              # hyperlpr3 --no-deps 安装后的运行时依赖（缺它引擎加载直接失败）
 pyyaml>=6.0
 tensorboard>=2.14
 
