@@ -35,30 +35,47 @@ _FFMPEG_HEADER_KEYS = {
     "cookie": "cookie",
 }
 
-# 站点请求头覆盖：有些站点按「出口 IP 类型 + UA 组合」做风控，机房/海外 IP 带浏览器 UA 直接被拦。
+# 站点**解析阶段**请求头覆盖：有些站点按「出口 IP 类型 + UA 组合」做风控，机房/海外 IP 带浏览器 UA 直接被拦。
 # 实测（2026-09-14，腾讯云新加坡出口 43.134.102.119 请求 B站）：
 #   默认 Chrome UA      → HTTP 412（风控页），API 也返回风控 HTML
 #   显式 curl/8.5.0 UA  → 页面 200 但 playurl「No video formats found」
 #   **空 UA**           → 页面 200 + API 正常 JSON + yt-dlp 成功拿到 720p 纯视频流
 # 而同一份代码在家宽（本机）用默认 UA 是正常的 → 所以按站点精准覆盖，而不是全局改 UA。
-SITE_HEADER_OVERRIDES: dict[str, dict[str, str]] = {
+SITE_PARSE_HEADERS: dict[str, dict[str, str]] = {
     "bilibili.com": {"User-Agent": "", "Referer": "https://www.bilibili.com/"},
 }
 
-# 环境变量强制覆盖 UA（留一个现场调优的旋钮：某些站点要求特定 UA / 需要配合 Cookie）
+# 站点**媒体阶段**（CDN 拉流 / 下载兜底）请求头覆盖。
+# ⚠️ 两个阶段的风控口径相反，必须分开：同一台服务器，同一个直链
+#   实测（同一台服务器、同一条 upos 直链）：
+#     仅 Referer / Referer + 空 UA / yt-dlp 回填头(UA 为空) → 403
+#     Referer + 浏览器 UA                                  → 200（2.69 MB 正常下载）
+#   即「解析要空 UA、CDN 要浏览器 UA」，一套头打不通两个阶段。
+BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+SITE_MEDIA_HEADERS: dict[str, dict[str, str]] = {
+    "bilibili.com": {"User-Agent": BROWSER_UA, "Referer": "https://www.bilibili.com/"},
+}
+
+# 环境变量强制覆盖解析阶段的 UA（现场调优旋钮）：
+#   LPR_ONLINE_UA="curl/8.5.0" 指定 UA ｜ default/auto 用 yt-dlp 默认 ｜ none/empty 强制不发 UA
 UA_ENV_VAR = "LPR_ONLINE_UA"
 
 
-def _header_overrides(url: str) -> dict[str, str]:
-    """按站点返回需要强制使用的请求头；`LPR_ONLINE_UA` 可覆盖 UA。"""
+def _site_headers(table: dict[str, dict[str, str]], url: str) -> dict[str, str]:
+    """按域名后缀（含子域）匹配站点头表。"""
+    host = _host_of(url)
+    for suffix, values in table.items():
+        if host == suffix or host.endswith("." + suffix):
+            return dict(values)
+    return {}
+
+
+def _parse_headers(url: str) -> dict[str, str]:
+    """解析阶段请求头：站点覆盖 + `LPR_ONLINE_UA` 覆盖。"""
     import os
 
-    host = _host_of(url)
-    headers: dict[str, str] = {}
-    for suffix, values in SITE_HEADER_OVERRIDES.items():
-        if host == suffix or host.endswith("." + suffix):
-            headers.update(values)
-            break
+    headers = _site_headers(SITE_PARSE_HEADERS, url)
     forced = os.environ.get(UA_ENV_VAR)
     if forced is not None:
         # default/auto = 交回 yt-dlp 默认的浏览器 UA；none/empty = 强制不发 UA
@@ -69,6 +86,22 @@ def _header_overrides(url: str) -> dict[str, str]:
             headers["User-Agent"] = ""
         else:
             headers["User-Agent"] = forced
+    return headers
+
+
+def _media_headers(url: str, from_extractor: dict[str, str]) -> dict[str, str]:
+    """媒体阶段请求头：提取器回填的头 → 站点覆盖（胜出）。
+
+    **空 UA 只用在解析阶段**（越过风控），媒体阶段保持站点指定的浏览器 UA——
+    否则 CDN 会 403（实测）。
+    """
+    import os
+
+    headers = dict(from_extractor or {})
+    headers.update(_site_headers(SITE_MEDIA_HEADERS, url))
+    forced = (os.environ.get(UA_ENV_VAR) or "").strip()
+    if forced and forced.lower() not in ("default", "auto", "none", "empty"):
+        headers["User-Agent"] = forced      # 只接受具体 UA 字符串，空值会打断 CDN 校验
     return headers
 
 
@@ -232,7 +265,7 @@ def resolve_online(url: str, max_height: int = 720, timeout_s: float = 25.0) -> 
         "format": fmt,
         "socket_timeout": int(max(5, timeout_s)),
     }
-    overrides = _header_overrides(url)
+    overrides = _parse_headers(url)
 
     # 候选头序列：先按站点覆盖（可能为空 = 用 yt-dlp 默认 UA）；若仍失败，再试"不发 UA"。
     # 依据：机房/海外 IP 上，风控更认「IP + UA 组合」而非单纯 IP——B站实测空 UA 直通。
@@ -284,10 +317,10 @@ def resolve_online(url: str, max_height: int = 720, timeout_s: float = 25.0) -> 
         play_url = best["url"]
         info.setdefault("http_headers", best.get("http_headers") or {})
 
-    # 站点覆盖（如空 UA）要盖住 yt-dlp 回填的浏览器 UA：
-    # 拉流（ffmpeg 头透传）与"下载兜底"必须与解析阶段同身份，否则 CDN/风控可能只在最后一步拦你。
-    headers = dict(info.get("http_headers") or {})
-    headers.update(overrides)
+    # 媒体阶段头（拉流 / 下载兜底）：
+    # 必须与解析阶段**分开**——解析阶段可能刻意不发 UA（越过 412），
+    # 但 CDN 校验要求浏览器 UA（实测空 UA 直拉 403）。站点媒体头优先级最高。
+    headers = _media_headers(url, info.get("http_headers") or {})
 
     media = OnlineMedia(
         play_url=play_url,

@@ -1366,8 +1366,8 @@ def test_bilibili_headers_override_empty_ua(monkeypatch):
     assert len(calls) == 1                       # 站点覆盖一次成功，不该再多试
     assert calls[0]["User-Agent"] == ""
     assert calls[0]["Referer"] == "https://www.bilibili.com/"
-    # 覆盖值要延续到拉流/下载阶段（同身份），盖住 yt-dlp 回填的浏览器 UA
-    assert media.headers["User-Agent"] == ""
+    # 媒体阶段必须换回浏览器 UA：实测同一台服务器上，空 UA 拉 CDN 直接 403
+    assert media.headers["User-Agent"] == online_mod.BROWSER_UA
     assert media.headers["Referer"] == "https://www.bilibili.com/"
 
 
@@ -1457,8 +1457,8 @@ def test_bilibili_headers_override_empty_ua(monkeypatch):
     assert len(calls) == 1                       # 站点覆盖一次成功，不该再多试
     assert calls[0]["User-Agent"] == ""
     assert calls[0]["Referer"] == "https://www.bilibili.com/"
-    # 覆盖值要延续到拉流/下载阶段（同身份），盖住 yt-dlp 回填的浏览器 UA
-    assert media.headers["User-Agent"] == ""
+    # 媒体阶段必须换回浏览器 UA：实测同一台服务器上，空 UA 拉 CDN 直接 403
+    assert media.headers["User-Agent"] == online_mod.BROWSER_UA
     assert media.headers["Referer"] == "https://www.bilibili.com/"
 
 
@@ -1508,3 +1508,61 @@ def test_ffmpeg_options_drop_empty_ua():
         {"User-Agent": "", "Referer": "https://www.bilibili.com/"})
     assert "user_agent" not in opts
     assert "referer;https://www.bilibili.com/" in opts
+
+
+def test_media_headers_keep_browser_ua_for_bilibili(monkeypatch):
+    """两阶段口径相反：解析用空 UA 越过 412，CDN 拉流必须用浏览器 UA（否则 403）。
+
+    实测（2026-09-14，同一台服务器同一条 upos 直链）：
+      仅 Referer / 空 UA / yt-dlp 回填头(UA 空) → 403；Referer + 浏览器 UA → 200。
+    """
+    monkeypatch.delenv(online_mod.UA_ENV_VAR, raising=False)
+    headers = online_mod._media_headers(
+        "https://www.bilibili.com/video/BV1VpZpYzE3k/",
+        {"User-Agent": "", "Accept": "*/*", "Referer": "https://www.bilibili.com/video/x"})
+    assert headers["User-Agent"] == online_mod.BROWSER_UA     # 站点媒体头盖掉空 UA
+    assert headers["Referer"] == "https://www.bilibili.com/"
+    assert headers["Accept"] == "*/*"                        # 提取器的其它头保留
+
+
+def test_env_none_does_not_break_media_stage(monkeypatch):
+    """LPR_ONLINE_UA=none 只影响解析阶段；不能让媒体阶段变成空 UA（会 403）。"""
+    monkeypatch.setenv(online_mod.UA_ENV_VAR, "none")
+    assert online_mod._parse_headers("https://www.bilibili.com/video/BV1x/")["User-Agent"] == ""
+    assert online_mod._media_headers("https://www.bilibili.com/video/BV1x/", {})["User-Agent"]         == online_mod.BROWSER_UA
+
+
+def test_env_concrete_ua_applies_to_both_stages(monkeypatch):
+    """现场调优：给了具体 UA 字符串时，两个阶段都用它（用户拿自己的可用 UA 顶掉默认策略）。"""
+    monkeypatch.setenv(online_mod.UA_ENV_VAR, "MyAgent/1.0")
+    assert online_mod._parse_headers("https://weibo.com/tv/show/1")["User-Agent"] == "MyAgent/1.0"
+    assert online_mod._media_headers("https://weibo.com/tv/show/1", {})["User-Agent"] == "MyAgent/1.0"
+
+
+def test_media_headers_keep_browser_ua_for_bilibili(monkeypatch):
+    """两阶段口径相反：解析用空 UA 越过 412，CDN 拉流必须用浏览器 UA（否则 403）。
+
+    实测（2026-09-14，同一台服务器同一条 upos 直链）：
+      仅 Referer / 空 UA / yt-dlp 回填头(UA 空) → 403；Referer + 浏览器 UA → 200。
+    """
+    monkeypatch.delenv(online_mod.UA_ENV_VAR, raising=False)
+    headers = online_mod._media_headers(
+        "https://www.bilibili.com/video/BV1VpZpYzE3k/",
+        {"User-Agent": "", "Accept": "*/*", "Referer": "https://www.bilibili.com/video/x"})
+    assert headers["User-Agent"] == online_mod.BROWSER_UA     # 站点媒体头盖掉空 UA
+    assert headers["Referer"] == "https://www.bilibili.com/"
+    assert headers["Accept"] == "*/*"                        # 提取器的其它头保留
+
+
+def test_env_none_does_not_break_media_stage(monkeypatch):
+    """LPR_ONLINE_UA=none 只影响解析阶段；不能让媒体阶段变成空 UA（会 403）。"""
+    monkeypatch.setenv(online_mod.UA_ENV_VAR, "none")
+    assert online_mod._parse_headers("https://www.bilibili.com/video/BV1x/")["User-Agent"] == ""
+    assert online_mod._media_headers("https://www.bilibili.com/video/BV1x/", {})["User-Agent"]         == online_mod.BROWSER_UA
+
+
+def test_env_concrete_ua_applies_to_both_stages(monkeypatch):
+    """现场调优：给了具体 UA 字符串时，两个阶段都用它（用户拿自己的可用 UA 顶掉默认策略）。"""
+    monkeypatch.setenv(online_mod.UA_ENV_VAR, "MyAgent/1.0")
+    assert online_mod._parse_headers("https://weibo.com/tv/show/1")["User-Agent"] == "MyAgent/1.0"
+    assert online_mod._media_headers("https://weibo.com/tv/show/1", {})["User-Agent"] == "MyAgent/1.0"
